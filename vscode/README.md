@@ -16,9 +16,13 @@ Freelancers and consultants often hold a Claude account per client, plus a perso
 
 ## Getting started
 
-1. Install this extension and the companion Claude Code plugin. In a Claude Code session:
+1. Install this extension and the companion Claude Code plugin. At the prompt of a Claude Code session:
    ```
-   /plugin install multi-account@claude-multi-account --marketplace roych28/claude-multi-account
+   /plugin install multi-account --marketplace roych28/claude-multi-account
+   ```
+   or from a shell:
+   ```
+   claude plugin install multi-account --marketplace roych28/claude-multi-account
    ```
 2. When the extension asks, let it start Claude Code tabs on each folder's account. It sets `claudeCode.claudeProcessWrapper` to a small launcher in `~/.claude-multi-account/bin`.
 3. Run **Claude Multi-Account: Add account** for each client and sign in.
