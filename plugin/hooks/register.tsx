@@ -323,6 +323,7 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
+    if ((await $.env.get('CLAUDE_CODE_ENTRYPOINT')) === 'claude-vscode') return next(e)
     const i = await read($, info)
     if (!i) return next(e)
     const u = await read($, usage)

@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
-import type { On } from 'claude-code'
+import type { On, RenderElement } from 'claude-code'
 
 import { accountFor } from '../hooks/register'
 
@@ -15,12 +15,18 @@ const ACCOUNTS = [
   'globex\t~/.claude-globex',
 ].join('\n')
 
-function world(on: On, files: Record<string, string>, sessionId: string, seen: (readonly string[] | undefined)[] = []) {
+function world(
+  on: On,
+  files: Record<string, string>,
+  sessionId: string,
+  seen: (readonly string[] | undefined)[] = [],
+  env: Record<string, string> = {},
+) {
   on('prompt.submit', ($, e) => {
     seen.push(e.context)
     return { text: e.text, context: e.context }
   })
-  mock.env(on, { HOME, CLAUDE_CONFIG_DIR: `${HOME}/.claude-acme` })
+  mock.env(on, { HOME, CLAUDE_CONFIG_DIR: `${HOME}/.claude-acme`, ...env })
   mock.clock(on, { now: 1_000_000 })
   on('fs.read', ($, e) => {
     const text = files[e.path]
@@ -93,6 +99,20 @@ test('the band shows the account first, then a switch for each signed-in account
     expect(await ui.find({ type: 'Text', text: /Session cost \$1\.50 {2}· {2}5-hour limit 23%/ })).toBeDefined()
     await ui.unmount()
   }
+})
+
+test('inside VS Code the band stays empty, since the status bar shows the same', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return h(Text, null, 'the engine band') as RenderElement
+  })
+  world(on, signedIn(), 's-6', [], { CLAUDE_CODE_ENTRYPOINT: 'claude-vscode' })
+  await start($)
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: 'the engine band' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'acme' })).toBeUndefined()
+  expect(await ui.find({ key: 'switch-personal' })).toBeUndefined()
+  await ui.unmount()
 })
 
 test('switching pins this folder in the folders file and keeps other rules', async ($, on) => {
