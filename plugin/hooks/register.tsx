@@ -283,6 +283,7 @@ export const register: Register = on => {
 
     if ((await $.env.get('CLAUDE_CODE_ENTRYPOINT')) === 'claude-vscode') {
       const text = `Claude account: ${loaded.current.name} (${loaded.current.email})`
+      $.ui.status(text)
       try {
         await $.session.append({ message: { type: 'system', content: [{ type: 'text', text }] } })
       } catch (err) {
@@ -332,12 +333,10 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
+    if ((await $.env.get('CLAUDE_CODE_ENTRYPOINT')) === 'claude-vscode') return next(e)
     const i = await read($, info)
     if (!i) return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
-    if ((await $.env.get('CLAUDE_CODE_ENTRYPOINT')) === 'claude-vscode') {
-      return <Text dimColor>{`Claude account: ${i.current.name} (${i.current.email})`}</Text>
-    }
     const u = await read($, usage)
     const pending = await read($, nextAccount)
 

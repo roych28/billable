@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
-import type { On } from 'claude-code'
+import type { On, RenderElement } from 'claude-code'
 
 import { accountFor } from '../hooks/register'
 
@@ -101,14 +101,22 @@ test('the band shows the account first, then a switch for each signed-in account
   }
 })
 
-test('inside VS Code the band is one line naming the account, with no buttons', async ($, on) => {
+test('inside VS Code the account is a status line, not a band', async ($, on) => {
+  const statuses: (string | undefined)[] = []
+  on('ui.status', ($, e) => {
+    statuses.push(e.text)
+    return { value: undefined }
+  })
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return h(Text, null, 'the engine band') as RenderElement
+  })
   world(on, signedIn(), 's-6', [], { CLAUDE_CODE_ENTRYPOINT: 'claude-vscode' })
   await start($)
+  expect(statuses).toContain('Claude account: acme (me@acme.test)')
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  const line = await ui.find({ type: 'Text', text: 'Claude account: acme (me@acme.test)' })
-  expect(line).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'the engine band' })).toBeDefined()
   expect(await ui.find({ key: 'switch-personal' })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /Session cost/ })).toBeUndefined()
   await ui.unmount()
 })
 
