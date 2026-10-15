@@ -115,6 +115,22 @@ test('inside VS Code the band stays empty, since the status bar shows the same',
   await ui.unmount()
 })
 
+test('inside VS Code the session opens with one line naming its account', async ($, on) => {
+  const session = mock.session(on)
+  world(on, signedIn(), 's-7', [], { CLAUDE_CODE_ENTRYPOINT: 'claude-vscode' })
+  await start($)
+  const notices = session.appended().filter(r => r.message.type === 'system')
+  expect(notices.length).toBe(1)
+  expect(JSON.stringify(notices[0]?.message.content)).toContain('Claude account: acme (me@acme.test)')
+})
+
+test('in the terminal the band names the account, so no notice is added', async ($, on) => {
+  const session = mock.session(on)
+  world(on, signedIn(), 's-8')
+  await start($)
+  expect(session.appended().filter(r => r.message.type === 'system').length).toBe(0)
+})
+
 test('switching pins this folder in the folders file and keeps other rules', async ($, on) => {
   const files = { ...signedIn(), [`${BASE}/folders`]: `*\tpersonal\n${HOME}/code/other\tacme\n` }
   world(on, files, 's-4')

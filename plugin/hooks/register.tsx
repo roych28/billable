@@ -281,6 +281,15 @@ export const register: Register = on => {
     }
     await writeStatus($)
 
+    if ((await $.env.get('CLAUDE_CODE_ENTRYPOINT')) === 'claude-vscode') {
+      const text = `Claude account: ${loaded.current.name} (${loaded.current.email})`
+      try {
+        await $.session.append({ message: { type: 'system', content: [{ type: 'text', text }] } })
+      } catch (err) {
+        $.ui.toast(`${text}. The notice could not be added: ${String(err)}`)
+      }
+    }
+
     return next(e)
   })
 
