@@ -201,3 +201,22 @@ test('with no accounts file, the session still shows its own account', async ($,
   expect(status.account).toEqual({ name: '.claude-acme', email: 'me@acme.test' })
   expect(status.others).toEqual([])
 })
+
+test('the ledger bills each run of a session to its account, counting from the run start', async ($, on) => {
+  const files = signedIn()
+  on('session.measure', () => ({ changed: ['cost'] }) as never)
+  world(on, files, 's-9')
+  await start($)
+  await $.session.measure({ cost: { usd: 4 }, rateLimits: [], changed: ['cost'] } as never)
+
+  const entry = JSON.parse(files[`${BASE}/ledger/s-9-1000000.json`] ?? '{}')
+  expect(entry).toEqual({
+    sessionId: 's-9',
+    account: 'acme',
+    email: 'me@acme.test',
+    folder: CWD,
+    startedAt: 1_000_000,
+    updatedAt: 1_000_000,
+    usd: 2.5,
+  })
+})

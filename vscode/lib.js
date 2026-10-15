@@ -12,6 +12,7 @@ function paths(home = os.homedir()) {
     accounts: path.join(base, 'accounts'),
     folders: path.join(base, 'folders'),
     sessions: path.join(base, 'sessions'),
+    ledger: path.join(base, 'ledger'),
     bin: path.join(base, 'bin'),
   }
 }

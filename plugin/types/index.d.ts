@@ -19,6 +19,7 @@ declare module 'claude-code' {
       usage: ClaudeMultiAccountUsage
       next: string | null
       handoff: string | null
+      run: { startedAt: number; startUsd: number } | null
     }
   }
 }

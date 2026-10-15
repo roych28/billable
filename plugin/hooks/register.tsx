@@ -7,6 +7,7 @@ const info = atom({ plugin: 'multi-account', key: 'info' } as const, null)
 const usage = atom({ plugin: 'multi-account', key: 'usage' } as const, { limits: [] })
 const nextAccount = atom({ plugin: 'multi-account', key: 'next' } as const, null)
 const handoff = atom({ plugin: 'multi-account', key: 'handoff' } as const, null)
+const run = atom({ plugin: 'multi-account', key: 'run' } as const, null)
 
 const HANDOFF_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000
 const NOT_SIGNED_IN = 'not signed in'
@@ -29,7 +30,7 @@ async function home($: EngineInterface): Promise<string> {
 }
 
 async function base($: EngineInterface): Promise<string> {
-  return `${await home($)}/.claude-multi-account`
+  return (await $.env.get('CLAUDE_MULTI_ACCOUNT_HOME')) || `${await home($)}/.claude-multi-account`
 }
 
 function expand(p: string, h: string): string {
@@ -171,6 +172,30 @@ async function writeStatus($: EngineInterface): Promise<void> {
     updatedAt: await $.clock.now(),
   }
   await $.fs.write(`${await base($)}/sessions/${sessionId}.json`, JSON.stringify(status))
+  await writeLedger($, sessionId, i, status.usage, status.updatedAt)
+}
+
+// One ledger entry per run of a session, so a session resumed on another account is billed to each account
+// for its own part. The cost counts from the run's start, whether or not Claude Code restores it on resume.
+async function writeLedger(
+  $: EngineInterface,
+  sessionId: string,
+  i: ClaudeMultiAccountInfo,
+  u: ClaudeMultiAccountUsage,
+  now: number,
+): Promise<void> {
+  const r = await read($, run)
+  if (!r || u.usd === undefined) return
+  const entry = {
+    sessionId,
+    account: i.current.name,
+    email: i.current.email,
+    folder: i.folder,
+    startedAt: r.startedAt,
+    updatedAt: now,
+    usd: Math.max(0, u.usd - r.startUsd),
+  }
+  await $.fs.write(`${await base($)}/ledger/${sessionId}-${r.startedAt}.json`, JSON.stringify(entry))
 }
 
 function handoffPrompt(note: Handoff): string {
@@ -264,6 +289,8 @@ export const register: Register = on => {
       usd: now.cost?.usd,
       limits: now.rateLimits.map(l => ({ kind: l.kind, percentUsed: l.percentUsed })),
     }))
+    const startedAt = await $.clock.now()
+    await update($, run, () => ({ startedAt, startUsd: now.cost?.usd ?? 0 }))
 
     const names = (await accounts($)).map(a => a.name)
     await $.command.register({

@@ -1,7 +1,10 @@
 const vscode = require('vscode')
 const fs = require('fs')
 const path = require('path')
+const os = require('os')
 const lib = require('./lib')
+const report = require('./report')
+const { createLicense } = require('./pro')
 
 const LIMIT_NAMES = { five_hour: '5-hour limit', seven_day: 'Weekly limit' }
 const WARN_PERCENT = 90
@@ -32,6 +35,7 @@ function activate(context) {
     vscode.window.showWarningMessage(`Claude Multi-Account could not install its launcher: ${err.message}`)
   }
   lib.pruneSessions(p)
+  const license = createLicense({ secrets: context.secrets })
 
   const item = vscode.window.createStatusBarItem('claudeMultiAccount', vscode.StatusBarAlignment.Left, 100)
   item.name = 'Claude Multi-Account'
@@ -53,13 +57,19 @@ function activate(context) {
 
   function tooltip(v) {
     const md = new vscode.MarkdownString(undefined, true)
-    md.isTrusted = { enabledCommands: ['claudeMultiAccount.switchTo', 'claudeMultiAccount.addAccount'] }
+    md.isTrusted = {
+      enabledCommands: ['claudeMultiAccount.switchTo', 'claudeMultiAccount.addAccount', 'claudeMultiAccount.costReport'],
+    }
     md.appendMarkdown(`$(account) **${v.currentName}** &nbsp; ${v.email}\n\n`)
 
     const buttons = v.accounts
       .filter(a => a.name !== v.currentName)
-      .map(a => link(`$(arrow-swap) Switch to ${a.name}`, 'claudeMultiAccount.switchTo', [a.name]))
+      .map(a => {
+        const signedOut = lib.emailOf(a.dir, p.home) === lib.NOT_SIGNED_IN
+        return link(`$(arrow-swap) Switch to ${a.name}${signedOut ? ' (not signed in)' : ''}`, 'claudeMultiAccount.switchTo', [a.name])
+      })
     buttons.push(link('$(add) Add account', 'claudeMultiAccount.addAccount', []))
+    buttons.push(link('$(graph) Cost report', 'claudeMultiAccount.costReport', []))
     md.appendMarkdown(buttons.join(' &nbsp;&nbsp; ') + '\n\n')
     if (v.next && v.next !== v.currentName) {
       md.appendMarkdown(`$(arrow-right) The next session in this folder runs on **${v.next}**\n\n`)
@@ -141,6 +151,11 @@ function activate(context) {
   }
 
   async function setupLauncher() {
+    if (!vscode.extensions.getExtension('anthropic.claude-code')) {
+      return vscode.window.showWarningMessage(
+        'Install the Claude Code extension first. In a terminal, run claude through ~/.claude-multi-account/bin/cma exec.',
+      )
+    }
     const config = vscode.workspace.getConfiguration('claudeCode')
     const launcher = path.join(p.bin, 'claude-launcher')
     const existing = config.get('claudeProcessWrapper')
@@ -157,7 +172,70 @@ function activate(context) {
     vscode.window.showInformationMessage('Claude Code tabs now start on the account each folder is set to.')
   }
 
+  async function askForPro(feature) {
+    const buy = 'Get Pro'
+    const enter = 'Enter license key'
+    const answer = await vscode.window.showInformationMessage(
+      `${feature} is part of Claude Multi-Account Pro.`,
+      ...(license.checkoutUrl ? [buy] : []),
+      enter,
+    )
+    if (answer === buy) await vscode.env.openExternal(vscode.Uri.parse(license.checkoutUrl))
+    if (answer === enter) await enterLicense()
+  }
+
+  async function enterLicense() {
+    if (license.isLaunch) {
+      return vscode.window.showInformationMessage('Every Pro feature is free during the launch. No key is needed.')
+    }
+    const key = await vscode.window.showInputBox({ title: 'Claude Multi-Account Pro', prompt: 'Your license key', ignoreFocusOut: true })
+    if (!key) return
+    try {
+      const r = await license.activate(key, `${os.hostname()} (VS Code)`)
+      if (r.ok) vscode.window.showInformationMessage('Pro is active on this machine. Thank you.')
+      else vscode.window.showErrorMessage(`License not activated: ${r.error}`)
+    } catch (err) {
+      vscode.window.showErrorMessage(`Could not reach the license server: ${err.message}`)
+    }
+  }
+
+  async function costReport() {
+    const entries = report.readLedger(p.ledger)
+    const free = report.freeMonths()
+    const pro = await license.isPro()
+    const pick = await vscode.window.showQuickPick(
+      report.months(entries).map(m => ({
+        label: m,
+        description: pro || free.includes(m) ? undefined : '$(lock) Pro',
+        month: m,
+      })),
+      { title: 'Claude cost by account', placeHolder: 'Pick a month' },
+    )
+    if (!pick) return
+    if (!pro && !free.includes(pick.month)) return askForPro('The full history')
+
+    const doc = await vscode.workspace.openTextDocument({
+      language: 'markdown',
+      content: report.toMarkdown(report.summarize(entries, pick.month), pick.month, os.homedir()),
+    })
+    await vscode.commands.executeCommand('markdown.showPreview', doc.uri)
+
+    const exportCsv = 'Export CSV'
+    const answer = await vscode.window.showInformationMessage(`Claude cost by account for ${pick.month}.`, exportCsv)
+    if (answer !== exportCsv) return
+    if (!(await license.isPro())) return askForPro('CSV export for invoices')
+    const target = await vscode.window.showSaveDialog({
+      defaultUri: vscode.Uri.file(path.join(os.homedir(), `claude-cost-${pick.month}.csv`)),
+      filters: { CSV: ['csv'] },
+    })
+    if (!target) return
+    fs.writeFileSync(target.fsPath, report.toCsv(entries, pick.month))
+    vscode.window.showInformationMessage(`Saved ${target.fsPath}`)
+  }
+
   context.subscriptions.push(
+    vscode.commands.registerCommand('claudeMultiAccount.costReport', costReport),
+    vscode.commands.registerCommand('claudeMultiAccount.enterLicense', enterLicense),
     vscode.commands.registerCommand('claudeMultiAccount.refresh', refresh),
     vscode.commands.registerCommand('claudeMultiAccount.switchTo', switchTo),
     vscode.commands.registerCommand('claudeMultiAccount.addAccount', addAccount),
@@ -182,7 +260,8 @@ function activate(context) {
     }),
   )
 
-  if (!vscode.workspace.getConfiguration('claudeCode').get('claudeProcessWrapper')) {
+  const hasClaudeCode = vscode.extensions.getExtension('anthropic.claude-code') !== undefined
+  if (hasClaudeCode && !vscode.workspace.getConfiguration('claudeCode').get('claudeProcessWrapper')) {
     const setUp = 'Set up'
     vscode.window
       .showInformationMessage('Claude Multi-Account: start Claude Code tabs on the account each folder is set to?', setUp)
@@ -200,6 +279,14 @@ function activate(context) {
   context.subscriptions.push({ dispose: () => clearInterval(timer) })
   context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(refresh))
   refresh()
+
+  // Read by the integration tests: what the status bar shows right now.
+  return {
+    statusBar: () => {
+      refresh()
+      return { text: item.text, tooltip: item.tooltip?.value ?? '', visible: item.text !== '' }
+    },
+  }
 }
 
 function deactivate() {}

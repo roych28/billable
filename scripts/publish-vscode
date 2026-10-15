@@ -19,7 +19,8 @@ fi
 echo "VSCE_PAT found (${#VSCE_PAT} chars)"
 
 cd "$ROOT/vscode"
-node --test test/
+npm test
+npm run test:integration
 VERSION=$(node -p "require('./package.json').version")
 OUT="$ROOT/claude-multi-account-$VERSION.vsix"
 npx -y @vscode/vsce@3.2.1 package -o "$OUT"

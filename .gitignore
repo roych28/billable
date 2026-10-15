@@ -4,3 +4,4 @@ node_modules/
 plugin/.claude-plugin/types/
 .claude-memory/
 creds.txt
+.vscode-test/

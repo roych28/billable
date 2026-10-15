@@ -1,3 +1,5 @@
 test/**
 icon.svg
 *.vsix
+node_modules/**
+.vscode-test/**

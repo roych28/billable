@@ -1,0 +1,110 @@
+#!/usr/bin/env node
+// Live check against the Claude accounts on this machine. For every account in ~/.claude-multi-account/accounts
+// it runs one short real session through the launcher and checks the whole chain: the folder rule picks the
+// account, Claude Code runs on it, the plugin reports it, and the cost lands in the ledger. Then it moves one
+// folder between two accounts and checks the second account picks up where the first stopped.
+//
+// It never touches your real rules: everything runs in a temporary CLAUDE_MULTI_ACCOUNT_HOME. Each session is
+// one short prompt on the cheapest model, so a run costs a few cents per account.
+const fs = require('fs')
+const os = require('os')
+const path = require('path')
+const { execFileSync } = require('child_process')
+const lib = require('../vscode/lib')
+
+const ROOT = path.resolve(__dirname, '..')
+const CMA = path.join(ROOT, 'vscode/bin/cma')
+const MODEL = process.env.CHECK_MODEL || 'haiku'
+
+const real = lib.paths()
+const accounts = lib.readAccounts(real).map(a => ({ ...a, email: lib.emailOf(a.dir, real.home) }))
+const signedIn = accounts.filter(a => a.email !== lib.NOT_SIGNED_IN)
+
+const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cma-live-')))
+const base = path.join(tmp, 'base')
+fs.mkdirSync(base)
+fs.copyFileSync(real.accounts, path.join(base, 'accounts'))
+
+let failures = 0
+function check(ok, label, detail = '') {
+  if (!ok) failures++
+  console.log(`${ok ? 'ok  ' : 'FAIL'} ${label}${detail ? `  (${detail})` : ''}`)
+}
+
+function writeRules(rules) {
+  fs.writeFileSync(path.join(base, 'folders'), rules.map(([f, a]) => `${f}\t${a}`).join('\n') + '\n')
+}
+
+function session(folder, prompt) {
+  const env = { ...process.env, CLAUDE_MULTI_ACCOUNT_HOME: base }
+  delete env.CLAUDE_CONFIG_DIR
+  delete env.CLAUDE_CODE_ENTRYPOINT
+  delete env.CLAUDECODE
+  const out = execFileSync(CMA, ['exec', 'claude', '-p', prompt, '--model', MODEL, '--output-format', 'json'], {
+    cwd: folder,
+    env,
+    encoding: 'utf8',
+    timeout: 180_000,
+  })
+  const r = JSON.parse(out)
+  let status = null
+  try {
+    status = JSON.parse(fs.readFileSync(path.join(base, 'sessions', `${r.session_id}.json`), 'utf8'))
+  } catch {}
+  const ledger = fs.existsSync(path.join(base, 'ledger'))
+    ? fs.readdirSync(path.join(base, 'ledger')).filter(f => f.startsWith(r.session_id))
+    : []
+  return { result: String(r.result ?? ''), sessionId: r.session_id, status, ledger }
+}
+
+console.log(`Accounts: ${accounts.map(a => `${a.name} (${a.email})`).join(', ')}`)
+console.log(`Temporary setup: ${tmp}\n`)
+check(signedIn.length >= 1, 'at least one account is signed in')
+
+const folders = Object.fromEntries(
+  signedIn.map(a => {
+    const f = path.join(tmp, 'work', a.name)
+    fs.mkdirSync(f, { recursive: true })
+    return [a.name, f]
+  }),
+)
+const shared = path.join(tmp, 'work', 'shared')
+fs.mkdirSync(path.join(shared, 'sub'), { recursive: true })
+writeRules([...signedIn.map(a => [folders[a.name], a.name]), [shared, signedIn[0].name]])
+
+for (const a of signedIn) {
+  const dir = execFileSync(CMA, ['dir', folders[a.name]], { env: { ...process.env, CLAUDE_MULTI_ACCOUNT_HOME: base }, encoding: 'utf8' }).trim()
+  check(dir === a.dir, `launcher: ${a.name}'s folder resolves to ${a.dir}`, dir || 'nothing')
+  try {
+    const s = session(folders[a.name], 'Reply with the single word OK.')
+    check(/ok/i.test(s.result), `${a.name}: the session answered`, s.result.slice(0, 60))
+    check(s.status?.account?.name === a.name, `${a.name}: the plugin reports the session on ${a.name}`, s.status?.account?.name ?? 'no status file')
+    check(s.status?.account?.email === a.email, `${a.name}: signed in as ${a.email}`, s.status?.account?.email ?? 'none')
+    const usd = s.ledger.length === 1 ? JSON.parse(fs.readFileSync(path.join(base, 'ledger', s.ledger[0]), 'utf8')).usd : 0
+    check(s.ledger.length === 1 && usd > 0, `${a.name}: the run and its cost are in the ledger`, `${s.ledger.length} entries, $${usd.toFixed(4)}`)
+  } catch (err) {
+    check(false, `${a.name}: the session ran`, String(err.message).split('\n')[0])
+  }
+}
+
+const sub = execFileSync(CMA, ['dir', path.join(shared, 'sub')], { env: { ...process.env, CLAUDE_MULTI_ACCOUNT_HOME: base }, encoding: 'utf8' }).trim()
+check(sub === signedIn[0].dir, 'launcher: a subfolder follows its parent folder rule', sub || 'nothing')
+
+if (signedIn.length >= 2) {
+  const [from, to] = signedIn
+  const word = `PELICAN-${Math.floor(Math.random() * 9000 + 1000)}`
+  try {
+    session(shared, `Remember this code word for later: ${word}. Reply only with OK.`)
+    writeRules([...signedIn.map(a => [folders[a.name], a.name]), [shared, to.name]])
+    const s = session(shared, 'What code word did the previous session in this folder ask to remember? Reply with the word only.')
+    check(s.status?.account?.name === to.name, `handoff: after the switch the folder runs on ${to.name}`, s.status?.account?.name ?? 'no status')
+    check(s.result.includes(word), `handoff: ${to.name} picks up where ${from.name} stopped`, s.result.slice(0, 80))
+  } catch (err) {
+    check(false, 'handoff: both sessions ran', String(err.message).split('\n')[0])
+  }
+} else {
+  console.log('skip handoff: needs two signed-in accounts')
+}
+
+console.log(`\n${failures === 0 ? 'All checks passed' : `${failures} check(s) failed`}. Temporary files: ${tmp}`)
+process.exit(failures === 0 ? 0 : 1)
