@@ -1,0 +1,12 @@
+{
+  "name": "claude-multi-account",
+  "owner": { "name": "Roy Chemo", "url": "https://github.com/roych28" },
+  "metadata": { "description": "Run each project on its own Claude account." },
+  "plugins": [
+    {
+      "name": "multi-account",
+      "source": "./plugin",
+      "description": "Account, cost and limits above the prompt, a per-folder account switch, and a handoff to the next session."
+    }
+  ]
+}

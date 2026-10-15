@@ -1,0 +1,26 @@
+{
+  "name": "claude-multi-account",
+  "displayName": "Claude Multi-Account",
+  "description": "Run each project on its own Claude account. See the account, tokens, cost and limits in the status bar, and switch with one click.",
+  "publisher": "roychemo",
+  "version": "0.3.0",
+  "license": "MIT",
+  "icon": "icon.png",
+  "repository": { "type": "git", "url": "https://github.com/roych28/claude-multi-account" },
+  "bugs": { "url": "https://github.com/roych28/claude-multi-account/issues" },
+  "homepage": "https://github.com/roych28/claude-multi-account#readme",
+  "categories": ["Other"],
+  "keywords": ["claude", "claude code", "multiple accounts", "freelance", "tokens", "usage", "cost"],
+  "engines": { "vscode": "^1.90.0" },
+  "main": "./extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "scripts": { "test": "node --test test/" },
+  "contributes": {
+    "commands": [
+      { "command": "claudeMultiAccount.switch", "title": "Switch account for this folder", "category": "Claude Multi-Account" },
+      { "command": "claudeMultiAccount.addAccount", "title": "Add account", "category": "Claude Multi-Account" },
+      { "command": "claudeMultiAccount.setupLauncher", "title": "Start Claude Code tabs on the folder's account", "category": "Claude Multi-Account" },
+      { "command": "claudeMultiAccount.refresh", "title": "Refresh", "category": "Claude Multi-Account" }
+    ]
+  }
+}
