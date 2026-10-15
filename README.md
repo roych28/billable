@@ -11,7 +11,7 @@ Freelancers and consultants often hold a Claude account per client, plus a perso
 - **The account in the status bar.** The account this folder runs on, the session's tokens and cost, and the highest rate-limit usage. The item turns amber at 90% of a limit.
 - **Switch in one click.** Hover the item: the account and its email come first, then a button for every other account. The choice is saved per folder, so each project keeps its own account and you can work on several at once.
 - **Add accounts from VS Code.** `Add account` creates a config directory for the new account and opens a terminal to sign in.
-- **Pick up where you stopped.** After a switch, open a new Claude tab: it receives the last request, the last answer and the path of the previous transcript, so the work continues on the new account without repeating yourself.
+- **Pick up where you stopped.** After a switch, start a new conversation right where you are: it receives the last request, the last answer and the path of the previous transcript, so the work continues on the new account without repeating yourself.
 - **Real token counts.** Tokens are read from the session transcript: input, output, cache reads and cache writes, for the whole session, resumed sessions included.
 
 ## Getting started

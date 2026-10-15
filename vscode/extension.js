@@ -109,12 +109,12 @@ function activate(context) {
     lib.pin(p, folder, name)
     refresh()
     const next = lib.accountFor(folder, lib.readRules(p)) ?? 'the default account'
-    const open = 'Open new Claude tab'
+    const start = 'Start new conversation'
     const answer = await vscode.window.showInformationMessage(
-      `${path.basename(folder)} now runs on ${next}. A new session picks up where the last one stopped.`,
-      open,
+      `${path.basename(folder)} now runs on ${next}. A new conversation picks up where the last one stopped.`,
+      start,
     )
-    if (answer === open) await vscode.commands.executeCommand('claude-vscode.editor.open')
+    if (answer === start) await vscode.commands.executeCommand('claude-vscode.newConversation')
   }
 
   async function addAccount() {
