@@ -1,0 +1,32 @@
+#!/bin/sh
+# Tests, packages and publishes the VS Code extension to the Marketplace (and Open VSX when a token is there).
+# Tokens are read from creds.txt at the repo root (git-ignored): VSCE_PAT=... and optionally OVSX_PAT=...
+set -eu
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+CREDS="$ROOT/creds.txt"
+
+token() {
+  [ -f "$CREDS" ] || return 0
+  sed -n "s/^$1=//p" "$CREDS" | tail -1
+}
+
+VSCE_PAT=$(token VSCE_PAT)
+OVSX_PAT=$(token OVSX_PAT)
+if [ -z "$VSCE_PAT" ]; then
+  echo "No VSCE_PAT in $CREDS" >&2
+  exit 1
+fi
+echo "VSCE_PAT found (${#VSCE_PAT} chars)"
+
+cd "$ROOT/vscode"
+node --test test/
+VERSION=$(node -p "require('./package.json').version")
+OUT="$ROOT/claude-multi-account-$VERSION.vsix"
+npx -y @vscode/vsce@3.2.1 package -o "$OUT"
+VSCE_PAT="$VSCE_PAT" npx -y @vscode/vsce@3.2.1 publish --packagePath "$OUT"
+echo "Published $VERSION to the VS Code Marketplace"
+
+if [ -n "$OVSX_PAT" ]; then
+  OVSX_PAT="$OVSX_PAT" npx -y ovsx@0.10.1 publish "$OUT"
+  echo "Published $VERSION to Open VSX"
+fi
