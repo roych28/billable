@@ -53,7 +53,7 @@ The launcher reads these files and starts Claude Code on the right account. The 
 
 ## Requirements
 
-macOS or Linux, with Claude Code installed. The launcher is a POSIX shell script.
+macOS, Linux or Windows, with Claude Code installed. The launcher is a shell script on macOS and Linux, and a small `.exe` on Windows (built from `launcher/`, Go), because the Claude Code extension starts its wrapper without a shell there.
 
 ## Privacy
 

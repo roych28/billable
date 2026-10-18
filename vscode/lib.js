@@ -18,8 +18,8 @@ function paths(home = os.homedir()) {
 }
 
 function expand(p, home) {
-  const full = p === '~' || p.startsWith('~/') ? home + p.slice(1) : p
-  return full.replace(/\/+$/, '')
+  const full = p === '~' ? home : p.startsWith('~/') || p.startsWith('~\\') ? path.join(home, p.slice(2)) : p
+  return full.replace(/[\\/]+$/, '')
 }
 
 function readRows(file) {
@@ -45,15 +45,29 @@ function readRules(p) {
   return readRows(p.folders).map(r => ({ path: r[0] === '*' ? '*' : expand(r[0], p.home), account: r[1] }))
 }
 
-function accountFor(folder, rules) {
+// How two paths are compared: forward slashes, no trailing slash, and case-insensitive on Windows.
+function pathKey(p, platform = process.platform) {
+  const k = p.replace(/\\/g, '/').replace(/\/+$/, '')
+  return platform === 'win32' ? k.toLowerCase() : k
+}
+
+function accountFor(folder, rules, platform = process.platform) {
+  const f = pathKey(folder, platform)
   let best = null
+  let bestLen = -1
   for (const r of rules) {
     if (r.path === '*') {
-      if (!best) best = r
+      if (bestLen < 0) {
+        best = r
+        bestLen = 0
+      }
       continue
     }
-    const matches = folder === r.path || folder.startsWith(r.path + '/')
-    if (matches && (!best || best.path === '*' || r.path.length > best.path.length)) best = r
+    const p = pathKey(r.path, platform)
+    if ((f === p || f.startsWith(p + '/')) && p.length > bestLen) {
+      best = r
+      bestLen = p.length
+    }
   }
   return best ? best.account : null
 }
@@ -67,14 +81,14 @@ function emailOf(dir, home) {
   }
 }
 
-function pin(p, folder, name) {
+function pin(p, folder, name, platform = process.platform) {
   let lines = []
   try {
     lines = fs.readFileSync(p.folders, 'utf8').split('\n').filter(l => l.trim())
   } catch {}
   const kept = lines.filter(l => {
     const first = (l.split('\t')[0] || '').trim()
-    return l.trim().startsWith('#') || first === '*' || expand(first, p.home) !== folder
+    return l.trim().startsWith('#') || first === '*' || pathKey(expand(first, p.home), platform) !== pathKey(folder, platform)
   })
   if (name !== 'auto') kept.push(`${folder}\t${name}`)
   fs.mkdirSync(p.base, { recursive: true })
@@ -95,8 +109,10 @@ function addAccount(p, name, dir) {
   fs.mkdirSync(expand(dir, p.home), { recursive: true })
 }
 
-function isInside(dir, root) {
-  return dir === root || dir.startsWith(root + path.sep)
+function isInside(dir, root, platform = process.platform) {
+  const d = pathKey(dir, platform)
+  const r = pathKey(root, platform)
+  return d === r || d.startsWith(r + '/')
 }
 
 function latestStatus(p, roots, account) {
@@ -125,6 +141,14 @@ function pruneSessions(p, maxAgeMs = 7 * 24 * 60 * 60 * 1000) {
       if (Date.now() - fs.statSync(file).mtimeMs > maxAgeMs) fs.unlinkSync(file)
     }
   } catch {}
+}
+
+// The launcher shipped for this platform: the shell scripts on macOS and Linux, the Go build on Windows, whose
+// Claude Code extension starts its wrapper without a shell.
+function launcherFiles(platform = process.platform) {
+  return platform === 'win32'
+    ? { dir: 'bin/win32', names: ['cma.exe', 'claude-launcher.exe'], wrapper: 'claude-launcher.exe' }
+    : { dir: 'bin', names: ['cma', 'claude-launcher'], wrapper: 'claude-launcher' }
 }
 
 const transcripts = new Map()
@@ -178,6 +202,8 @@ function short(n) {
 module.exports = {
   NOT_SIGNED_IN,
   paths,
+  pathKey,
+  launcherFiles,
   expand,
   readAccounts,
   readRules,

@@ -220,3 +220,14 @@ test('the ledger bills each run of a session to its account, counting from the r
     usd: 2.5,
   })
 })
+
+test('Windows paths match their folder rules whatever the case and slashes', () => {
+  const rules = [
+    { path: 'C:\\Work\\Acme', account: 'acme' },
+    { path: '*', account: 'personal' },
+  ]
+  expect(accountFor('c:\\work\\acme\\app', rules)).toBe('acme')
+  expect(accountFor('C:/Work/Acme', rules)).toBe('acme')
+  expect(accountFor('C:\\Work\\Acme-other', rules)).toBe('personal')
+  expect(accountFor('/work/Acme/app', [{ path: '/work/acme', account: 'acme' }])).toBe(null)
+})

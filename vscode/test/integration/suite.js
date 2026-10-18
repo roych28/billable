@@ -1,5 +1,6 @@
 const assert = require('assert')
 const fs = require('fs')
+const os = require('os')
 const path = require('path')
 const vscode = require('vscode')
 
@@ -31,8 +32,8 @@ check('the extension activates and registers every command', async () => {
 })
 
 check('the launcher is installed and resolves the folder to its account', async () => {
-  const cma = path.join(base, 'bin', 'cma')
-  assert.ok(fs.statSync(cma).mode & 0o111, 'cma is not executable')
+  const cma = path.join(base, 'bin', process.platform === 'win32' ? 'cma.exe' : 'cma')
+  if (process.platform !== 'win32') assert.ok(fs.statSync(cma).mode & 0o111, 'cma is not executable')
   const out = require('child_process').execFileSync(cma, ['dir', workspace], { encoding: 'utf8', env: { ...process.env } })
   assert.strictEqual(out.trim(), path.join(tmp, 'claude-acme'))
 })
@@ -128,25 +129,27 @@ function answer(fn, value) {
 }
 
 check('add account creates its config folder, records it and opens a terminal signed to it', async () => {
-  const input = answer('showInputBox', 'initech')
+  // The account folder lands in the real home (~/.claude-<name>), so the name is unique and the folder is removed.
+  const name = `cmatest${Date.now().toString(36)}`
+  const dir = path.join(os.homedir(), `.claude-${name}`)
+  const input = answer('showInputBox', name)
   const info = answer('showInformationMessage', undefined)
-  const before = vscode.window.terminals.length
   try {
     await vscode.commands.executeCommand('claudeMultiAccount.addAccount')
+    const accounts = fs.readFileSync(path.join(base, 'accounts'), 'utf8')
+    assert.ok(accounts.includes(`${name}\t~/.claude-${name}`), accounts)
+    const term = await until('the login terminal', () => vscode.window.terminals.find(t => t.name === `Claude login: ${name}`))
+    assert.strictEqual(term.creationOptions.env.CLAUDE_CONFIG_DIR, dir)
+    assert.ok(fs.statSync(dir).isDirectory(), 'the config folder was not created')
+    const nameRule = input.seen[0][0].validateInput
+    assert.strictEqual(nameRule('Bad Name'), 'Use lowercase letters, digits and dashes')
+    assert.strictEqual(nameRule('client-2'), null)
+    term.dispose()
   } finally {
     input.restore()
     info.restore()
+    fs.rmSync(dir, { recursive: true, force: true })
   }
-  const accounts = fs.readFileSync(path.join(base, 'accounts'), 'utf8')
-  assert.ok(accounts.includes('initech\t~/.claude-initech'), accounts)
-  const term = await until('the login terminal', () => vscode.window.terminals.find(t => t.name === 'Claude login: initech'))
-  assert.ok(vscode.window.terminals.length > before)
-  assert.strictEqual(term.creationOptions.env.CLAUDE_CONFIG_DIR, path.join(tmp, '.claude-initech'))
-  assert.ok(fs.statSync(path.join(tmp, '.claude-initech')).isDirectory(), 'the config folder was not created')
-  const nameRule = input.seen[0][0].validateInput
-  assert.strictEqual(nameRule('Bad Name'), 'Use lowercase letters, digits and dashes')
-  assert.strictEqual(nameRule('client-2'), null)
-  term.dispose()
 })
 
 check('add account refuses a name that already exists', async () => {

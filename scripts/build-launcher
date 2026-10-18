@@ -1,0 +1,10 @@
+#!/bin/sh
+# Builds the Windows launcher (launcher/, Go) into vscode/bin/win32. macOS and Linux use the shell launcher in vscode/bin.
+set -eu
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+OUT="$ROOT/vscode/bin/win32"
+mkdir -p "$OUT"
+cd "$ROOT/launcher"
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "$OUT/cma.exe" .
+cp "$OUT/cma.exe" "$OUT/claude-launcher.exe"
+ls -l "$OUT"

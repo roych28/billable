@@ -50,6 +50,12 @@ The same rules work for `claude` in any terminal. Add this to `~/.zshrc` or `~/.
 claude() { ~/.claude-multi-account/bin/cma exec claude "$@"; }
 ```
 
+On Windows, add this to your PowerShell profile (`notepad $PROFILE`):
+
+```powershell
+function claude { & "$HOME\.claude-multi-account\bin\cma.exe" exec claude.exe @args }
+```
+
 Inside a session, `/account` shows the account, cost and limits, and `/account <name>` switches the folder. The plugin also draws the account and its switch buttons above the prompt.
 
 ## Testing
@@ -75,7 +81,7 @@ Inside a session, `/account` shows the account, cost and limits, and `/account <
 
 ## Requirements
 
-macOS or Linux, with Claude Code installed. The launcher is a POSIX shell script.
+macOS, Linux or Windows, with Claude Code installed. The launcher is a shell script on macOS and Linux, and a small `.exe` on Windows (built from `launcher/`, Go), because the Claude Code extension starts its wrapper without a shell there.
 
 ## Privacy
 

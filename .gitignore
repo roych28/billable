@@ -5,3 +5,4 @@ plugin/.claude-plugin/types/
 .claude-memory/
 creds.txt
 .vscode-test/
+vscode/bin/win32/

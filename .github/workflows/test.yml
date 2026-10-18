@@ -7,8 +7,9 @@ jobs:
   vscode:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     defaults:
       run:
         working-directory: vscode
@@ -17,9 +18,29 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+      - run: sh ../scripts/build-launcher
       - run: npm ci
       - run: npm test
       - run: xvfb-run -a npm run test:integration
         if: runner.os == 'Linux'
       - run: npm run test:integration
         if: runner.os != 'Linux'
+  launcher:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: launcher
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+      - run: go vet ./...
+      - run: go test ./...

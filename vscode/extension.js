@@ -20,9 +20,10 @@ function link(label, command, args) {
 
 function installBin(context, p) {
   fs.mkdirSync(p.bin, { recursive: true })
-  for (const name of ['cma', 'claude-launcher']) {
+  const files = lib.launcherFiles()
+  for (const name of files.names) {
     const target = path.join(p.bin, name)
-    fs.copyFileSync(path.join(context.extensionPath, 'bin', name), target)
+    fs.copyFileSync(path.join(context.extensionPath, files.dir, name), target)
     fs.chmodSync(target, 0o755)
   }
 }
@@ -164,11 +165,11 @@ function activate(context) {
   async function setupLauncher() {
     if (!vscode.extensions.getExtension('anthropic.claude-code')) {
       return vscode.window.showWarningMessage(
-        'Install the Claude Code extension first. In a terminal, run claude through ~/.claude-multi-account/bin/cma exec.',
+        'Install the Claude Code extension first. In a terminal, run claude through the cma launcher in ~/.claude-multi-account/bin.',
       )
     }
     const config = vscode.workspace.getConfiguration('claudeCode')
-    const launcher = path.join(p.bin, 'claude-launcher')
+    const launcher = path.join(p.bin, lib.launcherFiles().wrapper)
     const existing = config.get('claudeProcessWrapper')
     if (existing && existing !== launcher) {
       const replace = 'Replace it'

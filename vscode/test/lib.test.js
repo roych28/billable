@@ -112,3 +112,19 @@ test('the latest status can be narrowed to one account', () => {
   assert.strictEqual(lib.latestStatus(p, ['/w/app'], 'globex'), null)
   assert.strictEqual(lib.latestStatus(p, ['/w/other']), null)
 })
+
+test('on Windows folder rules ignore case and slash direction', () => {
+  const rules = [{ path: 'C:\\Work\\Acme', account: 'acme' }, { path: '*', account: 'personal' }]
+  assert.strictEqual(lib.accountFor('c:\\work\\acme\\app', rules, 'win32'), 'acme')
+  assert.strictEqual(lib.accountFor('C:/Work/Acme', rules, 'win32'), 'acme')
+  assert.strictEqual(lib.accountFor('C:\\Work\\Acme-other', rules, 'win32'), 'personal')
+  assert.strictEqual(lib.accountFor('/work/Acme/app', [{ path: '/work/acme', account: 'acme' }], 'darwin'), null)
+})
+
+test('each platform gets its own launcher, and the files exist in the package', () => {
+  for (const platform of ['darwin', 'linux', 'win32']) {
+    const f = lib.launcherFiles(platform)
+    for (const name of f.names) assert.ok(fs.existsSync(path.join(__dirname, '..', f.dir, name)), `${platform}: ${f.dir}/${name}`)
+    assert.ok(f.names.includes(f.wrapper))
+  }
+})

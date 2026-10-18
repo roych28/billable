@@ -18,6 +18,7 @@ if [ -z "$VSCE_PAT" ]; then
 fi
 echo "VSCE_PAT found (${#VSCE_PAT} chars)"
 
+PATH="/usr/local/go/bin:$PATH" "$ROOT/scripts/build-launcher"
 cd "$ROOT/vscode"
 npm test
 npm run test:integration

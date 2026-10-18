@@ -26,7 +26,7 @@ type Handoff = {
 type Rule = { path: string; account: string }
 
 async function home($: EngineInterface): Promise<string> {
-  return (await $.env.get('HOME')) ?? ''
+  return (await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || ''
 }
 
 async function base($: EngineInterface): Promise<string> {
@@ -50,7 +50,7 @@ async function readLines($: EngineInterface, path: string): Promise<string[][]> 
 }
 
 async function emailOf($: EngineInterface, dir: string, h: string): Promise<string> {
-  const file = dir === `${h}/.claude` ? `${h}/.claude.json` : `${dir}/.claude.json`
+  const file = pathKey(dir) === pathKey(`${h}/.claude`) ? `${h}/.claude.json` : `${dir}/.claude.json`
   try {
     const parsed = JSON.parse(await $.fs.read(file)) as { oauthAccount?: { emailAddress?: string } }
     return parsed.oauthAccount?.emailAddress ?? NOT_SIGNED_IN
@@ -75,15 +75,29 @@ async function rules($: EngineInterface): Promise<Rule[]> {
   return rows.filter(r => r[0] && r[1]).map(r => ({ path: r[0] === '*' ? '*' : expand(r[0]!, h), account: r[1]! }))
 }
 
+// How two paths are compared: forward slashes, no trailing slash, and case-insensitive for Windows drive paths.
+export function pathKey(p: string): string {
+  const k = p.replace(/\\/g, '/').replace(/\/+$/, '')
+  return /^[a-zA-Z]:\//.test(k) ? k.toLowerCase() : k
+}
+
 export function accountFor(folder: string, list: Rule[]): string | null {
+  const f = pathKey(folder)
   let best: Rule | null = null
+  let bestLen = -1
   for (const r of list) {
     if (r.path === '*') {
-      if (!best) best = r
+      if (bestLen < 0) {
+        best = r
+        bestLen = 0
+      }
       continue
     }
-    const matches = folder === r.path || folder.startsWith(`${r.path}/`)
-    if (matches && (!best || best.path === '*' || r.path.length > best.path.length)) best = r
+    const p = pathKey(r.path)
+    if ((f === p || f.startsWith(`${p}/`)) && p.length > bestLen) {
+      best = r
+      bestLen = p.length
+    }
   }
   return best?.account ?? null
 }
@@ -105,7 +119,7 @@ async function loadInfo($: EngineInterface, cwd: string): Promise<ClaudeMultiAcc
   const h = await home($)
   const list = await accounts($)
   const dir = expand((await $.env.get('CLAUDE_CONFIG_DIR')) || `${h}/.claude`, h)
-  const current = list.find(a => a.dir === dir) ?? {
+  const current = list.find(a => pathKey(a.dir) === pathKey(dir)) ?? {
     name: dir.split('/').pop() ?? dir,
     dir,
     email: await emailOf($, dir, h),
@@ -113,7 +127,7 @@ async function loadInfo($: EngineInterface, cwd: string): Promise<ClaudeMultiAcc
   const sessionId = await $.session.id()
   return {
     current,
-    others: list.filter(a => a.dir !== current.dir && a.email !== NOT_SIGNED_IN),
+    others: list.filter(a => pathKey(a.dir) !== pathKey(current.dir) && a.email !== NOT_SIGNED_IN),
     folder: await folderRoot($, cwd),
     transcript: `${dir}/projects/${keyOf(cwd)}/${sessionId}.jsonl`,
   }
@@ -229,7 +243,7 @@ async function pin($: EngineInterface, folder: string, name: string): Promise<vo
   const h = await home($)
   const kept = lines.filter(l => {
     const first = l.split('\t')[0]?.trim() ?? ''
-    return l.trim().startsWith('#') || first === '*' || expand(first, h) !== folder
+    return l.trim().startsWith('#') || first === '*' || pathKey(expand(first, h)) !== pathKey(folder)
   })
   if (name !== 'auto') kept.push(`${folder}\t${name}`)
   await $.fs.write(path, kept.join('\n') + '\n')
