@@ -1,0 +1,48 @@
+<!-- Plugin Configuration File: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
+<!-- No <product-descriptor> here on purpose: the build adds it only with cmaPaid=true (see gradle.properties). -->
+<idea-plugin>
+    <id>com.roychemo.billable</id>
+    <name>Billable</name>
+    <vendor url="https://github.com/roych28">Roy Chemo</vendor>
+
+    <description><![CDATA[
+        <p>Run every project on the right Claude account, and always know which one you are on.</p>
+        <p>Freelancers and consultants often hold a Claude account per client, plus a personal one. Claude Code signs in
+        once per config directory, so it is easy to spend a client's quota on your own project, or lose track of what a
+        session costs. Billable puts the account, the usage and the switch in the status bar.</p>
+        <ul>
+            <li><b>The account in the status bar</b>: the account this folder runs on, the latest session's tokens and
+            cost, and the highest rate-limit usage. It turns amber at 90% of a limit.</li>
+            <li><b>Switch in one click</b>: the choice is saved per folder, so each project keeps its own account.</li>
+            <li><b>Cost report by account</b>: what each account, and each folder under it, cost in a month, with CSV
+            export for invoices.</li>
+            <li><b>The terminal follows</b>: one shell function makes <code>claude</code> in the IDE terminal start on the
+            folder's account.</li>
+        </ul>
+        <p>Works with the companion Claude Code plugin <code>multi-account</code> and shares its setup with the
+        Billable extension for VS Code. Everything stays on your machine. Not affiliated with Anthropic.</p>
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <statusBarWidgetFactory id="ClaudeMultiAccount" implementation="com.roychemo.cma.ide.CmaWidgetFactory" order="first"/>
+        <postStartupActivity implementation="com.roychemo.cma.ide.CmaStartup"/>
+        <notificationGroup id="Billable" displayType="BALLOON"/>
+    </extensions>
+
+    <actions>
+        <group id="ClaudeMultiAccount.Menu" text="Billable" popup="true">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <action id="ClaudeMultiAccount.Switch" class="com.roychemo.cma.ide.SwitchAccountAction"
+                    text="Switch Account for This Folder" description="Pick the Claude account this project runs on"/>
+            <action id="ClaudeMultiAccount.CostReport" class="com.roychemo.cma.ide.CostReportAction"
+                    text="Cost Report by Account" description="What each Claude account and folder cost in a month"/>
+            <action id="ClaudeMultiAccount.CopyShellFunction" class="com.roychemo.cma.ide.CopyShellFunctionAction"
+                    text="Copy Terminal Shell Function"
+                    description="Copy the shell function that starts claude in the terminal on the folder's account"/>
+            <action id="ClaudeMultiAccount.Refresh" class="com.roychemo.cma.ide.RefreshAction"
+                    text="Refresh" description="Read the account, cost and limits again"/>
+        </group>
+    </actions>
+</idea-plugin>

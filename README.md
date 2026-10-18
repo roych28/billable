@@ -91,6 +91,7 @@ Inside a session, `/account` shows the account, cost and limits, and `/account <
 
 - `plugin/`: the Claude Code plugin `multi-account`
 - `vscode/`: the VS Code extension, with the launcher in `vscode/bin`
+- `jetbrains/`: the same extension for IntelliJ IDEA, PyCharm, WebStorm and the other JetBrains IDEs (`./gradlew buildPlugin`)
 
 ## Commands
 
