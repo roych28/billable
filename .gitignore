@@ -6,3 +6,4 @@ plugin/.claude-plugin/types/
 creds.txt
 .vscode-test/
 vscode/bin/win32/
+CLAUDE.local.md
