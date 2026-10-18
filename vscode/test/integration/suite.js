@@ -300,6 +300,22 @@ const idleFake = {
   copied: [],
 }
 
+// Idle sessions read ps, so they are off on Windows: there the command only says so.
+const unixCheck = process.platform === 'win32' ? () => {} : check
+
+if (process.platform === 'win32') {
+  check('on Windows "Stop idle sessions" says it works on macOS and Linux, and the hover has no sessions line', async () => {
+    const info = answer('showInformationMessage', undefined)
+    try {
+      await vscode.commands.executeCommand('claudeMultiAccount.stopIdleSessions')
+    } finally {
+      info.restore()
+    }
+    assert.match(String(info.seen[0]?.[0]), /macOS and Linux/)
+    assert.ok(!api.statusBar().tooltip.includes('**Claude sessions:**'), api.statusBar().tooltip)
+  })
+}
+
 function idleSetup() {
   const now = Date.now()
   const acme = path.join(tmp, 'claude-acme')
@@ -329,7 +345,7 @@ function idleSetup() {
   })
 }
 
-check('the hover counts the running and idle Claude sessions and their RAM, below the usage', async () => {
+unixCheck('the hover counts the running and idle Claude sessions and their RAM, below the usage', async () => {
   idleSetup()
   const t = api.statusBar().tooltip
   const line = t.indexOf('**Claude sessions:** 3 running · 2 idle · 1.1 GB RAM')
@@ -338,7 +354,7 @@ check('the hover counts the running and idle Claude sessions and their RAM, belo
   assert.ok(t.indexOf('Stop idle sessions') > line, t)
 })
 
-check('"Stop idle sessions" lists the idle ones, pre-selects the long quiet one, stops only what was chosen, and copies the resume command', async () => {
+unixCheck('"Stop idle sessions" lists the idle ones, pre-selects the long quiet one, stops only what was chosen, and copies the resume command', async () => {
   idleSetup()
   let listed, options
   const pick = answers('showQuickPick', [
@@ -364,7 +380,7 @@ check('"Stop idle sessions" lists the idle ones, pre-selects the long quiet one,
   assert.ok(api.statusBar().tooltip.includes('**Claude sessions:** 2 running · 1 idle'), api.statusBar().tooltip)
 })
 
-check('with autoStopHours set, the check stops only sessions idle past it and says which', async () => {
+unixCheck('with autoStopHours set, the check stops only sessions idle past it and says which', async () => {
   idleSetup()
   const config = vscode.workspace.getConfiguration('claudeMultiAccount')
   await config.update('idleSessions.autoStopHours', 6, vscode.ConfigurationTarget.Global)
