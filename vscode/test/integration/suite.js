@@ -76,9 +76,11 @@ check('a session status shows real tokens, cost and limits', async () => {
 
 check('switching pins the folder to the new account and keeps the other rules', async () => {
   vscode.commands.executeCommand('claudeMultiAccount.switchTo', 'personal')
+  const { pathKey } = require('../../lib')
   const rules = await until('the folders file', () => {
     const t = fs.readFileSync(path.join(base, 'folders'), 'utf8')
-    return t.includes(`${workspace}\tpersonal`) && t
+    const pinned = t.split('\n').map(l => l.split('\t')).some(([f, a]) => a === 'personal' && f && pathKey(f) === pathKey(workspace))
+    return pinned && t
   })
   assert.ok(rules.includes(`*\tpersonal`), rules)
   assert.ok(rules.includes(`${path.dirname(workspace)}\tacme`), rules)

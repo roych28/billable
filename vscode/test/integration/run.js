@@ -8,7 +8,7 @@ const { runTests } = require('@vscode/test-electron')
 async function main() {
   // Set when this runs from a terminal inside VS Code; it would start the test VS Code as plain Node.
   delete process.env.ELECTRON_RUN_AS_NODE
-  const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cma-vscode-')))
+  const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'cma-vscode-')))
   const base = path.join(tmp, 'base')
   const workspace = path.join(tmp, 'work', 'app')
   fs.mkdirSync(base, { recursive: true })
