@@ -23,7 +23,7 @@ const check = (name, fn) => checks.push({ name, fn })
 let api
 
 check('the extension activates and registers every command', async () => {
-  const ext = vscode.extensions.getExtension('roychemo.claude-multi-account')
+  const ext = vscode.extensions.getExtension('roychemo.billable')
   api = await ext.activate()
   const all = await vscode.commands.getCommands(true)
   for (const c of ['switch', 'switchTo', 'addAccount', 'setupLauncher', 'refresh', 'costReport', 'enterLicense', 'stopIdleSessions']) {

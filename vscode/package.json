@@ -1,7 +1,7 @@
 {
-  "name": "claude-multi-account",
-  "displayName": "Claude Multi-Account",
-  "description": "Run each project on its own Claude account. See the account, tokens, cost and limits in the status bar, switch with one click, and stop idle Claude sessions that hold RAM.",
+  "name": "billable",
+  "displayName": "Billable: Claude Code accounts and cost per client",
+  "description": "Formerly Claude Multi-Account. Run each project on its own Claude account. See the account, tokens, cost and limits in the status bar, switch with one click, and stop idle Claude sessions that hold RAM.",
   "publisher": "roychemo",
   "version": "0.6.0",
   "license": "MIT",
@@ -47,41 +47,41 @@
       {
         "command": "claudeMultiAccount.switch",
         "title": "Switch account for this folder",
-        "category": "Claude Multi-Account"
+        "category": "Billable"
       },
       {
         "command": "claudeMultiAccount.addAccount",
         "title": "Add account",
-        "category": "Claude Multi-Account"
+        "category": "Billable"
       },
       {
         "command": "claudeMultiAccount.costReport",
         "title": "Cost report by account",
-        "category": "Claude Multi-Account"
+        "category": "Billable"
       },
       {
         "command": "claudeMultiAccount.stopIdleSessions",
         "title": "Stop idle sessions",
-        "category": "Claude Multi-Account"
+        "category": "Billable"
       },
       {
         "command": "claudeMultiAccount.setupLauncher",
         "title": "Start Claude Code tabs on the folder's account",
-        "category": "Claude Multi-Account"
+        "category": "Billable"
       },
       {
         "command": "claudeMultiAccount.refresh",
         "title": "Refresh",
-        "category": "Claude Multi-Account"
+        "category": "Billable"
       },
       {
         "command": "claudeMultiAccount.enterLicense",
         "title": "Enter Pro license key",
-        "category": "Claude Multi-Account"
+        "category": "Billable"
       }
     ],
     "configuration": {
-      "title": "Claude Multi-Account",
+      "title": "Billable",
       "properties": {
         "claudeMultiAccount.idleSessions.autoStopHours": {
           "type": "number",

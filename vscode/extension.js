@@ -38,13 +38,13 @@ function activate(context) {
   try {
     installBin(context, p)
   } catch (err) {
-    vscode.window.showWarningMessage(`Claude Multi-Account could not install its launcher: ${err.message}`)
+    vscode.window.showWarningMessage(`Billable could not install its launcher: ${err.message}`)
   }
   lib.pruneSessions(p)
   const license = createLicense({ secrets: context.secrets })
 
   const item = vscode.window.createStatusBarItem('claudeMultiAccount', vscode.StatusBarAlignment.Left, 100)
-  item.name = 'Claude Multi-Account'
+  item.name = 'Billable'
   item.command = 'claudeMultiAccount.switch'
   context.subscriptions.push(item)
 
@@ -237,7 +237,7 @@ function activate(context) {
       const show = 'Resume commands'
       vscode.window
         .showInformationMessage(
-          `Claude Multi-Account stopped ${result.stopped.length} session${result.stopped.length === 1 ? '' : 's'} idle over ${hours} h: ${describe(result.stopped)}.`,
+          `Billable stopped ${result.stopped.length} session${result.stopped.length === 1 ? '' : 's'} idle over ${hours} h: ${describe(result.stopped)}.`,
           show,
         )
         .then(answer => answer === show && showResumeCommands(result.stopped))
@@ -329,7 +329,7 @@ function activate(context) {
     if (existing && existing !== launcher) {
       const replace = 'Replace it'
       const answer = await vscode.window.showWarningMessage(
-        `Claude Code already launches through ${existing}. Replace it with the Claude Multi-Account launcher?`,
+        `Claude Code already launches through ${existing}. Replace it with the Billable launcher?`,
         { modal: true },
         replace,
       )
@@ -343,7 +343,7 @@ function activate(context) {
     const buy = 'Get Pro'
     const enter = 'Enter license key'
     const answer = await vscode.window.showInformationMessage(
-      `${feature} is part of Claude Multi-Account Pro.`,
+      `${feature} is part of Billable Pro.`,
       ...(license.checkoutUrl ? [buy] : []),
       enter,
     )
@@ -355,7 +355,7 @@ function activate(context) {
     if (license.isLaunch) {
       return vscode.window.showInformationMessage('Every Pro feature is free during the launch. No key is needed.')
     }
-    const key = await vscode.window.showInputBox({ title: 'Claude Multi-Account Pro', prompt: 'Your license key', ignoreFocusOut: true })
+    const key = await vscode.window.showInputBox({ title: 'Billable Pro', prompt: 'Your license key', ignoreFocusOut: true })
     if (!key) return
     try {
       const r = await license.activate(key, `${os.hostname()} (VS Code)`)
@@ -435,7 +435,7 @@ function activate(context) {
   if (hasClaudeCode && !vscode.workspace.getConfiguration('claudeCode').get('claudeProcessWrapper')) {
     const setUp = 'Set up'
     vscode.window
-      .showInformationMessage('Claude Multi-Account: start Claude Code tabs on the account each folder is set to?', setUp)
+      .showInformationMessage('Billable: start Claude Code tabs on the account each folder is set to?', setUp)
       .then(answer => answer === setUp && setupLauncher())
   }
 

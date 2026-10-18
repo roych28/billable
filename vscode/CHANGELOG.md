@@ -2,8 +2,9 @@
 
 ## 0.6.0
 
+- **Renamed to Billable** (formerly Claude Multi-Account), now listed as `roychemo.billable`. Settings, commands and `~/.claude-multi-account` keep their names, so nothing needs to be set up again.
 - **Idle sessions.** The hover shows how many Claude Code sessions are running, how many are idle, and their total RAM.
-- New command `Claude Multi-Account: Stop idle sessions`: pick idle sessions to stop (those quiet past the threshold are pre-selected), then copy the `claude --resume` command for each.
+- New command `Billable: Stop idle sessions`: pick idle sessions to stop (those quiet past the threshold are pre-selected), then copy the `claude --resume` command for each.
 - New setting `claudeMultiAccount.idleSessions.autoStopHours` (default `0`, off): every 30 minutes, stop sessions idle longer than this, with a notification listing them.
 - A session is stopped only when Claude Code marks it idle, its transcript has been quiet past the threshold, its process is a live Claude Code binary, and it uses under 2.5% CPU over a 5-second sample. A busy session is never stopped.
 - A demo GIF on the Marketplace page.

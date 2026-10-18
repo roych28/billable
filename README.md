@@ -1,8 +1,10 @@
-# Claude Multi-Account
+# Billable
 
-Run every project on the right Claude account, and always know which one you are on.
+Claude Code accounts and cost per client: run every project on the right Claude account, and always know what it costs.
 
-Freelancers and consultants often hold a Claude account per client, plus a personal one. Claude Code signs in once per config directory, so it is easy to spend a client's quota on your own project, or lose track of what a session costs. Claude Multi-Account puts the account, the usage and the switch where you can see them.
+*Formerly Claude Multi-Account. Not affiliated with Anthropic; Claude and Claude Code are trademarks of Anthropic.*
+
+Freelancers and consultants often hold a Claude account per client, plus a personal one. Claude Code signs in once per config directory, so it is easy to spend a client's quota on your own project, or lose track of what a session costs. Billable puts the account, the usage and the switch where you can see them.
 
 ![Switching a folder's Claude account from the status bar, then the cost report by account](https://github.com/roych28/claude-multi-account/raw/HEAD/docs/demo.gif)
 
@@ -15,15 +17,15 @@ Freelancers and consultants often hold a Claude account per client, plus a perso
 - **Add accounts from VS Code.** `Add account` creates a config directory for the new account and opens a terminal to sign in.
 - **Pick up where you stopped.** After a switch, start a new conversation right where you are: it receives the last request, the last answer and the path of the previous transcript, so the work continues on the new account without repeating yourself.
 - **Real token counts.** Tokens are read from the session transcript: input, output, cache reads and cache writes, for the whole session, resumed sessions included.
-- **Cost report by account.** What each account, and each folder under it, cost in a month. One account per client means one line per client on your invoice. Open it from the hover or with `Claude Multi-Account: Cost report by account`.
+- **Cost report by account.** What each account, and each folder under it, cost in a month. One account per client means one line per client on your invoice. Open it from the hover or with `Billable: Cost report by account`.
 - **Idle sessions.** Every Claude Code session you leave open keeps a few hundred MB of RAM. The hover shows how many sessions are running, how many are idle, and the RAM they hold together. `Stop idle sessions` stops the ones you pick and gives you the command to resume each one, and a setting can stop long-idle sessions on its own.
 
 ## Idle sessions
 
-Claude Code sessions stay in memory until you close them, and a dozen forgotten ones can hold several GB. Claude Multi-Account reads the session files Claude Code keeps in each account's config directory (`sessions/<pid>.json`) and the process list.
+Claude Code sessions stay in memory until you close them, and a dozen forgotten ones can hold several GB. Billable reads the session files Claude Code keeps in each account's config directory (`sessions/<pid>.json`) and the process list.
 
 - **In the hover:** `Claude sessions: 12 running · 8 idle · 3.5 GB RAM`, with a `Stop idle sessions` button.
-- **`Claude Multi-Account: Stop idle sessions`** lists the idle sessions with their folder, how long they have been quiet and their RAM. Sessions quiet longer than the threshold are already selected (the auto-stop setting, or 6 hours when it is off). The chosen ones get `SIGTERM`, and you get `cd <folder> && claude --resume <session id>` for each, with a copy action. The conversation itself stays on disk.
+- **`Billable: Stop idle sessions`** lists the idle sessions with their folder, how long they have been quiet and their RAM. Sessions quiet longer than the threshold are already selected (the auto-stop setting, or 6 hours when it is off). The chosen ones get `SIGTERM`, and you get `cd <folder> && claude --resume <session id>` for each, with a copy action. The conversation itself stays on disk.
 - **Automatic:** set `claudeMultiAccount.idleSessions.autoStopHours` to a number of hours (default `0`, off). Every 30 minutes, sessions idle longer than that are stopped, and a notification lists them with their resume commands.
 
 A session is stopped only when all of these hold, checked again right before the signal:
@@ -33,11 +35,11 @@ A session is stopped only when all of these hold, checked again right before the
 - The process is alive and is a Claude Code binary, started no later than the session it claims (so a reused pid is left alone).
 - It uses under 2.5% CPU over a 5-second sample.
 
-It covers the accounts Claude Multi-Account knows (the `accounts` file, or `~/.claude`), on macOS and Linux.
+It covers the accounts Billable knows (the `accounts` file, or `~/.claude`), on macOS and Linux.
 
 ## Pro
 
-Pro adds the full history of the cost report, beyond the current and the previous month, and CSV export for invoices. **Every Pro feature is free during the launch.** When Pro goes on sale, `Claude Multi-Account: Enter Pro license key` unlocks it on your machine.
+Pro adds the full history of the cost report, beyond the current and the previous month, and CSV export for invoices. **Every Pro feature is free during the launch.** When Pro goes on sale, `Billable: Enter Pro license key` unlocks it on your machine.
 
 ## Getting started
 
@@ -50,7 +52,7 @@ Pro adds the full history of the cost report, beyond the current and the previou
    claude plugin install multi-account --marketplace roych28/claude-multi-account
    ```
 2. When the extension asks, let it start Claude Code tabs on each folder's account. It sets `claudeCode.claudeProcessWrapper` to a small launcher in `~/.claude-multi-account/bin`.
-3. Run **Claude Multi-Account: Add account** for each client and sign in.
+3. Run **Billable: Add account** for each client and sign in.
 4. Open a project, click the account in the status bar, and pick the account it should run on.
 
 ## How it works
@@ -92,13 +94,13 @@ Inside a session, `/account` shows the account, cost and limits, and `/account <
 
 ## Commands
 
-- `Claude Multi-Account: Switch account for this folder`
-- `Claude Multi-Account: Cost report by account`
-- `Claude Multi-Account: Add account`
-- `Claude Multi-Account: Stop idle sessions`
-- `Claude Multi-Account: Start Claude Code tabs on the folder's account`
-- `Claude Multi-Account: Refresh`
-- `Claude Multi-Account: Enter Pro license key`
+- `Billable: Switch account for this folder`
+- `Billable: Cost report by account`
+- `Billable: Add account`
+- `Billable: Stop idle sessions`
+- `Billable: Start Claude Code tabs on the folder's account`
+- `Billable: Refresh`
+- `Billable: Enter Pro license key`
 
 ## Settings
 
