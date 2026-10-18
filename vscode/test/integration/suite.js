@@ -130,40 +130,134 @@ function answer(fn, value) {
   return { seen, restore: () => { vscode.window[fn] = real } }
 }
 
-check('add account creates its config folder, records it and opens a terminal signed to it', async () => {
+// Answers each prompt in turn from a list.
+function answers(fn, values) {
+  const real = vscode.window[fn]
+  const seen = []
+  vscode.window[fn] = async (...args) => {
+    seen.push(args)
+    const v = values[seen.length - 1]
+    return typeof v === 'function' ? v(...args) : v
+  }
+  return { seen, restore: () => { vscode.window[fn] = real } }
+}
+
+// Records the login terminal instead of opening one.
+function fakeTerminal() {
+  const real = vscode.window.createTerminal
+  const made = []
+  vscode.window.createTerminal = options => {
+    const t = { options, sent: [], show() {}, dispose() {}, sendText(text) { this.sent.push(text) } }
+    made.push(t)
+    return t
+  }
+  return { made, restore: () => { vscode.window.createTerminal = real } }
+}
+
+check('add account creates its folder, records it and signs in with claude auth login and the email', async () => {
   // The account folder lands in the real home (~/.claude-<name>), so the name is unique and the folder is removed.
   const name = `cmatest${Date.now().toString(36)}`
   const dir = path.join(os.homedir(), `.claude-${name}`)
-  const input = answer('showInputBox', name)
+  const input = answers('showInputBox', [name, 'me@client.test'])
   const info = answer('showInformationMessage', undefined)
+  const term = fakeTerminal()
   try {
     await vscode.commands.executeCommand('claudeMultiAccount.addAccount')
     const accounts = fs.readFileSync(path.join(base, 'accounts'), 'utf8')
     assert.ok(accounts.includes(`${name}\t~/.claude-${name}`), accounts)
-    const term = await until('the login terminal', () => vscode.window.terminals.find(t => t.name === `Claude login: ${name}`))
-    assert.strictEqual(term.creationOptions.env.CLAUDE_CONFIG_DIR, dir)
     assert.ok(fs.statSync(dir).isDirectory(), 'the config folder was not created')
-    const nameRule = input.seen[0][0].validateInput
+    assert.strictEqual(term.made.length, 1)
+    assert.strictEqual(term.made[0].options.env.CLAUDE_CONFIG_DIR, dir)
+    assert.deepStrictEqual(term.made[0].sent, ['claude auth login --email me@client.test'])
+    const [nameRule, emailRule] = input.seen.map(a => a[0].validateInput)
     assert.strictEqual(nameRule('Bad Name'), 'Use lowercase letters, digits and dashes')
+    assert.match(nameRule('auto'), /reserved/)
+    assert.strictEqual(nameRule('acme'), 'An account named acme already exists')
     assert.strictEqual(nameRule('client-2'), null)
-    term.dispose()
+    assert.strictEqual(emailRule(''), null)
+    assert.strictEqual(emailRule('nope'), 'Enter an email address, or leave it empty')
+    assert.strictEqual(emailRule('a@b.co; rm -rf ~'), 'Enter an email address, or leave it empty')
   } finally {
     input.restore()
     info.restore()
+    term.restore()
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
 
-check('add account refuses a name that already exists', async () => {
-  const input = answer('showInputBox', 'acme')
-  const error = answer('showErrorMessage', undefined)
+check('add account without an email runs claude auth login, and cancelling the email adds nothing', async () => {
+  const name = `cmatest${Date.now().toString(36)}b`
+  const dir = path.join(os.homedir(), `.claude-${name}`)
+  const info = answer('showInformationMessage', undefined)
+  const term = fakeTerminal()
   try {
+    let input = answers('showInputBox', [name, ''])
     await vscode.commands.executeCommand('claudeMultiAccount.addAccount')
-  } finally {
     input.restore()
-    error.restore()
+    assert.deepStrictEqual(term.made[0].sent, ['claude auth login'])
+
+    const other = `${name}x`
+    input = answers('showInputBox', [other, undefined])
+    await vscode.commands.executeCommand('claudeMultiAccount.addAccount')
+    input.restore()
+    assert.ok(!fs.readFileSync(path.join(base, 'accounts'), 'utf8').includes(other), 'a cancelled add must not record the account')
+    assert.strictEqual(term.made.length, 1)
+  } finally {
+    info.restore()
+    term.restore()
+    fs.rmSync(dir, { recursive: true, force: true })
   }
-  assert.strictEqual(error.seen[0][0], 'An account named acme already exists')
+})
+
+check('the menu offers "Use default" only for a folder with its own rule, and it falls back to the parent rule', async () => {
+  const { pathKey } = require('../../lib')
+  const ownRule = () =>
+    fs.readFileSync(path.join(base, 'folders'), 'utf8').split('\n').map(l => l.split('\t')).find(([f]) => f && f !== '*' && pathKey(f) === pathKey(workspace))
+  assert.ok(ownRule(), 'the earlier switch should have pinned this folder')
+
+  let items
+  const pick = answer('showQuickPick', list => { items = list; return list.find(i => i.name === 'auto') })
+  const info = answer('showInformationMessage', undefined)
+  try {
+    await vscode.commands.executeCommand('claudeMultiAccount.switch')
+  } finally {
+    pick.restore()
+    info.restore()
+  }
+  const useDefault = items.find(i => i.name === 'auto')
+  assert.ok(useDefault, JSON.stringify(items.map(i => i.label)))
+  assert.match(useDefault.description, /it runs on acme/)
+  assert.strictEqual(ownRule(), undefined, 'the folder rule should be gone')
+  assert.ok(api.statusBar().text.startsWith('$(account) acme'), api.statusBar().text)
+
+  const again = answer('showQuickPick', list => { items = list; return undefined })
+  try {
+    await vscode.commands.executeCommand('claudeMultiAccount.switch')
+  } finally {
+    again.restore()
+  }
+  assert.ok(!items.some(i => i.name === 'auto'), 'no "Use default" without a rule of its own')
+  assert.ok(items.some(i => i.name === '+add'), 'Add account stays in the menu')
+})
+
+check('"Add account" in the menu runs the add-account flow', async () => {
+  const name = `cmatest${Date.now().toString(36)}m`
+  const dir = path.join(os.homedir(), `.claude-${name}`)
+  const pick = answer('showQuickPick', list => list.find(i => i.name === '+add'))
+  const input = answers('showInputBox', [name, ''])
+  const info = answer('showInformationMessage', undefined)
+  const term = fakeTerminal()
+  try {
+    await vscode.commands.executeCommand('claudeMultiAccount.switch')
+    assert.ok(fs.readFileSync(path.join(base, 'accounts'), 'utf8').includes(`${name}\t`))
+    assert.strictEqual(term.made.length, 1)
+  } finally {
+    pick.restore()
+    input.restore()
+    info.restore()
+    term.restore()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 check('the cost report opens a monthly table per account, and exports a CSV', async () => {

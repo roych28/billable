@@ -131,3 +131,16 @@ test('each platform gets its own launcher, and the files exist in the package', 
     assert.ok(f.names.includes(f.wrapper))
   }
 })
+
+test('the inherited account is what a folder falls back to once its own rule is dropped', () => {
+  const rules = [
+    { path: '*', account: 'personal' },
+    { path: '/w', account: 'acme' },
+    { path: '/w/app', account: 'globex' },
+  ]
+  assert.strictEqual(lib.inheritedAccount('/w/app', rules), 'acme')
+  assert.strictEqual(lib.inheritedAccount('/w', rules), 'personal')
+  assert.strictEqual(lib.inheritedAccount('/w/app/sub', rules), undefined)
+  assert.strictEqual(lib.inheritedAccount('/elsewhere', rules), undefined)
+  assert.strictEqual(lib.inheritedAccount('/w/app', [{ path: '/w/app', account: 'globex' }]), null)
+})

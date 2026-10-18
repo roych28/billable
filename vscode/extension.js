@@ -9,6 +9,7 @@ const { createLicense } = require('./pro')
 const LIMIT_NAMES = { five_hour: '5-hour limit', seven_day: 'Weekly limit' }
 const WARN_PERCENT = 90
 const NAME_RULE = /^[a-z0-9][a-z0-9-]{0,30}$/
+const EMAIL_RULE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/
 
 function folders() {
   return (vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath)
@@ -140,12 +141,25 @@ function activate(context) {
   }
 
   async function addAccount() {
+    const known = new Set(lib.readAccounts(p).map(a => a.name))
     const name = await vscode.window.showInputBox({
-      title: 'Add a Claude account',
+      title: 'Add a Claude account (1/2)',
       prompt: 'A short name, such as a client: lowercase letters, digits and dashes',
-      validateInput: v => (NAME_RULE.test(v) ? null : 'Use lowercase letters, digits and dashes'),
+      validateInput: v => {
+        if (!NAME_RULE.test(v)) return 'Use lowercase letters, digits and dashes'
+        if (v === 'auto') return '"auto" is reserved: it means the folder follows its default account'
+        if (known.has(v)) return `An account named ${v} already exists`
+        return null
+      },
     })
     if (!name) return
+    const email = await vscode.window.showInputBox({
+      title: 'Add a Claude account (2/2)',
+      prompt: 'The email of that Claude account, to fill in the sign-in page (optional)',
+      placeHolder: 'you@client.com',
+      validateInput: v => (v === '' || EMAIL_RULE.test(v) ? null : 'Enter an email address, or leave it empty'),
+    })
+    if (email === undefined) return
     const dir = `~/.claude-${name}`
     try {
       lib.addAccount(p, name, dir)
@@ -157,9 +171,11 @@ function activate(context) {
       env: { CLAUDE_CONFIG_DIR: lib.expand(dir, p.home) },
     })
     terminal.show()
-    terminal.sendText('claude /login')
+    terminal.sendText(email ? `claude auth login --email ${email}` : 'claude auth login')
     refresh()
-    vscode.window.showInformationMessage(`Sign in to ${name} in the terminal. Then switch a folder to it from the status bar.`)
+    vscode.window.showInformationMessage(
+      `Sign in to ${name} in the browser that opens. If the browser is signed in to another Claude account, sign out there first. Then switch a folder to ${name} from the status bar.`,
+    )
   }
 
   async function setupLauncher() {
@@ -255,11 +271,14 @@ function activate(context) {
     vscode.commands.registerCommand('claudeMultiAccount.switch', async () => {
       const v = view()
       if (!v) return
+      // Offered only when the folder has a rule of its own; it then names the account the folder falls back to.
+      const inherited = lib.inheritedAccount(v.folder, lib.readRules(p))
+      const inherit = inherited === undefined ? null : (inherited ?? v.accounts[0].name)
       const picks = [
         ...v.accounts
           .filter(a => a.name !== v.currentName)
           .map(a => ({ label: `$(account) ${a.name}`, description: lib.emailOf(a.dir, p.home), name: a.name })),
-        { label: '$(discard) Use default', description: 'Remove the rule for this folder', name: 'auto' },
+        ...(inherit ? [{ label: '$(discard) Use default', description: `Drop this folder's own rule: it runs on ${inherit}`, name: 'auto' }] : []),
         { label: '$(add) Add account', description: 'Sign in to another Claude account', name: '+add' },
       ]
       const pick = await vscode.window.showQuickPick(picks, {

@@ -81,6 +81,13 @@ function emailOf(dir, home) {
   }
 }
 
+// The account a folder would run on without a rule of its own, or undefined when it has no rule of its own.
+function inheritedAccount(folder, rules, platform = process.platform) {
+  const own = rules.filter(r => r.path !== '*' && pathKey(r.path, platform) === pathKey(folder, platform))
+  if (own.length === 0) return undefined
+  return accountFor(folder, rules.filter(r => !own.includes(r)), platform)
+}
+
 function pin(p, folder, name, platform = process.platform) {
   let lines = []
   try {
@@ -204,6 +211,7 @@ module.exports = {
   paths,
   pathKey,
   launcherFiles,
+  inheritedAccount,
   expand,
   readAccounts,
   readRules,
