@@ -48,7 +48,7 @@ check('the status bar names the folder account, and the hover puts it before the
   assert.ok(at('Cost report') > at('Add account'), t)
   assert.strictEqual(at('Switch to acme'), -1, t)
   assert.strictEqual(at('(not signed in)'), -1, t)
-  assert.ok(at('No session data yet') > 0, t)
+  assert.ok(at('No session on acme in this folder yet') > 0, t)
 })
 
 check('a session status shows real tokens, cost and limits', async () => {
@@ -81,9 +81,33 @@ check('switching pins the folder to the new account and keeps the other rules', 
   })
   assert.ok(rules.includes(`*\tpersonal`), rules)
   assert.ok(rules.includes(`${path.dirname(workspace)}\tacme`), rules)
+})
+
+check('after a switch the status bar shows the new account at once, even while the old chat keeps updating', async () => {
+  const file = path.join(base, 'sessions', 's-1.json')
+  const old = JSON.parse(fs.readFileSync(file, 'utf8'))
+  fs.writeFileSync(file, JSON.stringify({ ...old, updatedAt: Date.now() + 1000 }))
   const s = api.statusBar()
-  assert.ok(s.text.includes('$(arrow-right) personal'), s.text)
-  assert.ok(s.tooltip.includes('The next session in this folder runs on **personal**'), s.tooltip)
+  assert.ok(s.text.startsWith('$(account) personal'), s.text)
+  assert.ok(s.text.includes('$(warning) chat on acme'), s.text)
+  assert.ok(!s.text.includes('$1.50'), `usage of the acme chat must not show under personal: ${s.text}`)
+  assert.ok(s.tooltip.includes('The open conversation still runs on **acme**'), s.tooltip)
+  assert.ok(s.tooltip.includes('No session on personal in this folder yet'), s.tooltip)
+})
+
+check('once a conversation runs on the new account the warning goes away and its usage shows', async () => {
+  fs.writeFileSync(
+    path.join(base, 'sessions', 's-2.json'),
+    JSON.stringify({
+      sessionId: 's-2', cwd: workspace, folder: workspace, transcript: '',
+      account: { name: 'personal', email: 'me@example.test' }, others: [],
+      usage: { usd: 0.25, limits: [] }, next: null, updatedAt: Date.now() + 2000,
+    }),
+  )
+  const s = api.statusBar()
+  assert.ok(s.text.startsWith('$(account) personal'), s.text)
+  assert.ok(s.text.includes('$0.25'), s.text)
+  assert.ok(!s.text.includes('$(warning)'), s.text)
 })
 
 check('an account that is not signed in is marked in the hover', async () => {

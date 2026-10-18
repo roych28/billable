@@ -42,23 +42,32 @@ function activate(context) {
   item.command = 'claudeMultiAccount.switch'
   context.subscriptions.push(item)
 
+  // The status bar shows the account the folder is set to, so a switch shows at once. Usage comes from the
+  // latest session on that account; a conversation still open on another account is flagged.
   function view() {
     const roots = folders()
     if (roots.length === 0) return null
     const folder = roots[0]
     const accounts = lib.readAccounts(p)
-    const status = lib.latestStatus(p, roots)
-    const next = lib.accountFor(folder, lib.readRules(p))
-    const currentName = status?.account.name ?? next ?? accounts[0].name
+    const latest = lib.latestStatus(p, roots)
+    const ruled = lib.accountFor(folder, lib.readRules(p))
+    const currentName = ruled ?? latest?.account.name ?? accounts[0].name
     const current = accounts.find(a => a.name === currentName)
+    const status = lib.latestStatus(p, roots, currentName)
     const email = status?.account.email ?? (current ? lib.emailOf(current.dir, p.home) : lib.NOT_SIGNED_IN)
-    return { folder, accounts, status, next, currentName, email }
+    const openOn = latest && latest.account.name !== currentName ? latest.account.name : null
+    return { folder, accounts, status, openOn, currentName, email }
   }
 
   function tooltip(v) {
     const md = new vscode.MarkdownString(undefined, true)
     md.isTrusted = {
-      enabledCommands: ['claudeMultiAccount.switchTo', 'claudeMultiAccount.addAccount', 'claudeMultiAccount.costReport'],
+      enabledCommands: [
+        'claudeMultiAccount.switchTo',
+        'claudeMultiAccount.addAccount',
+        'claudeMultiAccount.costReport',
+        'claude-vscode.newConversation',
+      ],
     }
     md.appendMarkdown(`$(account) **${v.currentName}** &nbsp; ${v.email}\n\n`)
 
@@ -71,14 +80,16 @@ function activate(context) {
     buttons.push(link('$(add) Add account', 'claudeMultiAccount.addAccount', []))
     buttons.push(link('$(graph) Cost report', 'claudeMultiAccount.costReport', []))
     md.appendMarkdown(buttons.join(' &nbsp;&nbsp; ') + '\n\n')
-    if (v.next && v.next !== v.currentName) {
-      md.appendMarkdown(`$(arrow-right) The next session in this folder runs on **${v.next}**\n\n`)
+    if (v.openOn) {
+      md.appendMarkdown(
+        `$(warning) The open conversation still runs on **${v.openOn}**. ${link('Start a new conversation', 'claude-vscode.newConversation', [])} to move it to **${v.currentName}**.\n\n`,
+      )
     }
 
     md.appendMarkdown('---\n\n')
     const s = v.status
     if (!s) {
-      md.appendMarkdown('No session data yet. Open a Claude Code tab in this folder.')
+      md.appendMarkdown(`No session on ${v.currentName} in this folder yet. Start a conversation to see its usage.`)
       return md
     }
     const t = lib.sessionTokens(s.transcript)
@@ -106,7 +117,7 @@ function activate(context) {
       if (v.status.usage?.usd !== undefined) parts.push(`$(credit-card) $${v.status.usage.usd.toFixed(2)}`)
       if (limits.length) parts.push(`$(dashboard) ${top}%`)
     }
-    if (v.next && v.next !== v.currentName) parts.push(`$(arrow-right) ${v.next}`)
+    if (v.openOn) parts.push(`$(warning) chat on ${v.openOn}`)
     item.text = parts.join('   ')
     item.tooltip = tooltip(v)
     item.backgroundColor = top >= WARN_PERCENT ? new vscode.ThemeColor('statusBarItem.warningBackground') : undefined

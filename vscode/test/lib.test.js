@@ -98,3 +98,17 @@ test('the shell launcher picks the same account as the extension', () => {
   assert.strictEqual(run(path.join(p.home, 'w/app')), path.join(p.home, '.claude-acme'))
   assert.strictEqual(run(p.home), 'unset')
 })
+
+test('the latest status can be narrowed to one account', () => {
+  const p = sandbox()
+  fs.mkdirSync(p.sessions, { recursive: true })
+  const row = (id, account, updatedAt) =>
+    fs.writeFileSync(path.join(p.sessions, `${id}.json`), JSON.stringify({ sessionId: id, cwd: '/w/app', account: { name: account }, updatedAt }))
+  row('a', 'acme', 1)
+  row('b', 'personal', 2)
+  row('c', 'acme', 3)
+  assert.strictEqual(lib.latestStatus(p, ['/w/app']).sessionId, 'c')
+  assert.strictEqual(lib.latestStatus(p, ['/w/app'], 'personal').sessionId, 'b')
+  assert.strictEqual(lib.latestStatus(p, ['/w/app'], 'globex'), null)
+  assert.strictEqual(lib.latestStatus(p, ['/w/other']), null)
+})

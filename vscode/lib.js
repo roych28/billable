@@ -99,7 +99,7 @@ function isInside(dir, root) {
   return dir === root || dir.startsWith(root + path.sep)
 }
 
-function latestStatus(p, roots) {
+function latestStatus(p, roots, account) {
   let best = null
   let files = []
   try {
@@ -111,6 +111,7 @@ function latestStatus(p, roots) {
     try {
       const s = JSON.parse(fs.readFileSync(path.join(p.sessions, f), 'utf8'))
       if (!roots.some(r => isInside(s.cwd, r))) continue
+      if (account && s.account?.name !== account) continue
       if (!best || s.updatedAt > best.updatedAt) best = s
     } catch {}
   }
