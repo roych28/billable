@@ -26,7 +26,7 @@ check('the extension activates and registers every command', async () => {
   const ext = vscode.extensions.getExtension('roychemo.claude-multi-account')
   api = await ext.activate()
   const all = await vscode.commands.getCommands(true)
-  for (const c of ['switch', 'switchTo', 'addAccount', 'setupLauncher', 'refresh', 'costReport', 'enterLicense']) {
+  for (const c of ['switch', 'switchTo', 'addAccount', 'setupLauncher', 'refresh', 'costReport', 'enterLicense', 'stopIdleSessions']) {
     assert.ok(all.includes(`claudeMultiAccount.${c}`), `missing claudeMultiAccount.${c}`)
   }
 })
@@ -290,6 +290,101 @@ check('the cost report opens a monthly table per account, and exports a CSV', as
   const csv = fs.readFileSync(csvPath, 'utf8').trim().split('\n')
   assert.strictEqual(csv.length, 4, csv.join('\n'))
   assert.ok(csv[0].startsWith('month,account,email,folder'), csv[0])
+})
+
+// Idle sessions run against fixture session files and a fake process table. The pids are above the highest pid
+// macOS and Linux hand out, and signalling goes to a recorder, so no real process is ever touched.
+const idleFake = {
+  table: new Map(),
+  killed: [],
+  copied: [],
+}
+
+function idleSetup() {
+  const now = Date.now()
+  const acme = path.join(tmp, 'claude-acme')
+  const write = (pid, sessionId, cwd, status, quietMs) => {
+    fs.mkdirSync(path.join(acme, 'sessions'), { recursive: true })
+    fs.writeFileSync(path.join(acme, 'sessions', `${pid}.json`), JSON.stringify({ pid, sessionId, cwd, status, startedAt: now - 20 * 3_600_000 }))
+    const t = path.join(acme, 'projects', 'idle-test', `${sessionId}.jsonl`)
+    fs.mkdirSync(path.dirname(t), { recursive: true })
+    fs.writeFileSync(t, '{}\n')
+    fs.utimesSync(t, (now - quietMs) / 1000, (now - quietMs) / 1000)
+  }
+  write(9_900_001, 'sess-old', workspace, 'idle', 10 * 3_600_000)
+  write(9_900_002, 'sess-recent', path.join(tmp, 'work', 'api'), 'idle', 5 * 60_000)
+  write(9_900_003, 'sess-busy', path.join(tmp, 'work', 'web'), 'busy', 10 * 3_600_000)
+  const row = (rssMb, command = '/x/native-binary/claude --output-format stream-json') => ({ rssKb: rssMb * 1024, pcpu: 0, ageSec: 20 * 3600, cpuTimeSec: 5, command })
+  idleFake.table = new Map([[9_900_001, row(600)], [9_900_002, row(300)], [9_900_003, row(200)]])
+  idleFake.killed = []
+  idleFake.copied = []
+  api.setIdleDeps({
+    ps: pids => new Map(pids.filter(p => idleFake.table.has(p)).map(p => [p, { ...idleFake.table.get(p) }])),
+    kill: (pid, signal) => {
+      idleFake.killed.push([pid, signal])
+      idleFake.table.delete(pid)
+    },
+    sleep: async () => {},
+    copy: async text => { idleFake.copied.push(text) },
+  })
+}
+
+check('the hover counts the running and idle Claude sessions and their RAM, below the usage', async () => {
+  idleSetup()
+  const t = api.statusBar().tooltip
+  const line = t.indexOf('**Claude sessions:** 3 running · 2 idle · 1.1 GB RAM')
+  assert.ok(line > 0, t)
+  assert.ok(line > t.indexOf('---') && line > t.indexOf('Cost report'), t)
+  assert.ok(t.indexOf('Stop idle sessions') > line, t)
+})
+
+check('"Stop idle sessions" lists the idle ones, pre-selects the long quiet one, stops only what was chosen, and copies the resume command', async () => {
+  idleSetup()
+  let listed, options
+  const pick = answers('showQuickPick', [
+    (list, opts) => { listed = list; options = opts; return list.filter(i => i.picked) },
+    list => list.find(i => i.label.includes('Copy all')),
+  ])
+  const info = answer('showInformationMessage', undefined)
+  const warn = answer('showWarningMessage', undefined)
+  try {
+    await vscode.commands.executeCommand('claudeMultiAccount.stopIdleSessions')
+  } finally {
+    pick.restore()
+    info.restore()
+    warn.restore()
+  }
+  assert.ok(options.canPickMany, 'the list must allow several sessions')
+  assert.deepStrictEqual(listed.map(i => i.label), ['app', 'api'])
+  assert.deepStrictEqual(listed.map(i => !!i.picked), [true, false])
+  assert.match(listed[0].description, /^quiet 10\.0 h · 600 MB$/)
+  assert.deepStrictEqual(idleFake.killed, [[9_900_001, 'SIGTERM']])
+  assert.deepStrictEqual(idleFake.copied, [`cd ${workspace} && CLAUDE_CONFIG_DIR=${path.join(tmp, 'claude-acme')} claude --resume sess-old`])
+  assert.strictEqual(warn.seen.length, 0, JSON.stringify(warn.seen))
+  assert.ok(api.statusBar().tooltip.includes('**Claude sessions:** 2 running · 1 idle'), api.statusBar().tooltip)
+})
+
+check('with autoStopHours set, the check stops only sessions idle past it and says which', async () => {
+  idleSetup()
+  const config = vscode.workspace.getConfiguration('claudeMultiAccount')
+  await config.update('idleSessions.autoStopHours', 6, vscode.ConfigurationTarget.Global)
+  const info = answer('showInformationMessage', undefined)
+  let result
+  try {
+    result = await api.autoStopIdleNow()
+  } finally {
+    info.restore()
+    await config.update('idleSessions.autoStopHours', undefined, vscode.ConfigurationTarget.Global)
+  }
+  assert.deepStrictEqual(idleFake.killed, [[9_900_001, 'SIGTERM']])
+  assert.deepStrictEqual(result.stopped.map(s => s.sessionId), ['sess-old'])
+  assert.strictEqual(info.seen.length, 1)
+  assert.match(info.seen[0][0], /stopped 1 session idle over 6 h: app \(10\.0 h\)/)
+
+  idleSetup()
+  const off = await api.autoStopIdleNow()
+  assert.deepStrictEqual(off.stopped, [], 'with the setting at 0 nothing is stopped')
+  assert.deepStrictEqual(idleFake.killed, [])
 })
 
 check('setting up the launcher without the Claude Code extension warns instead of failing', async () => {

@@ -16,6 +16,24 @@ Freelancers and consultants often hold a Claude account per client, plus a perso
 - **Pick up where you stopped.** After a switch, start a new conversation right where you are: it receives the last request, the last answer and the path of the previous transcript, so the work continues on the new account without repeating yourself.
 - **Real token counts.** Tokens are read from the session transcript: input, output, cache reads and cache writes, for the whole session, resumed sessions included.
 - **Cost report by account.** What each account, and each folder under it, cost in a month. One account per client means one line per client on your invoice. Open it from the hover or with `Claude Multi-Account: Cost report by account`.
+- **Idle sessions.** Every Claude Code session you leave open keeps a few hundred MB of RAM. The hover shows how many sessions are running, how many are idle, and the RAM they hold together. `Stop idle sessions` stops the ones you pick and gives you the command to resume each one, and a setting can stop long-idle sessions on its own.
+
+## Idle sessions
+
+Claude Code sessions stay in memory until you close them, and a dozen forgotten ones can hold several GB. Claude Multi-Account reads the session files Claude Code keeps in each account's config directory (`sessions/<pid>.json`) and the process list.
+
+- **In the hover:** `Claude sessions: 12 running · 8 idle · 3.5 GB RAM`, with a `Stop idle sessions` button.
+- **`Claude Multi-Account: Stop idle sessions`** lists the idle sessions with their folder, how long they have been quiet and their RAM. Sessions quiet longer than the threshold are already selected (the auto-stop setting, or 6 hours when it is off). The chosen ones get `SIGTERM`, and you get `cd <folder> && claude --resume <session id>` for each, with a copy action. The conversation itself stays on disk.
+- **Automatic:** set `claudeMultiAccount.idleSessions.autoStopHours` to a number of hours (default `0`, off). Every 30 minutes, sessions idle longer than that are stopped, and a notification lists them with their resume commands.
+
+A session is stopped only when all of these hold, checked again right before the signal:
+
+- Claude Code marks it `idle`. A busy session is never stopped, not even when you pick it.
+- Its transcript has not been written for the threshold (when no transcript is found, the process must be that old), and the process is at least that old too.
+- The process is alive and is a Claude Code binary, started no later than the session it claims (so a reused pid is left alone).
+- It uses under 2.5% CPU over a 5-second sample.
+
+It covers the accounts Claude Multi-Account knows (the `accounts` file, or `~/.claude`), on macOS and Linux.
 
 ## Pro
 
@@ -77,9 +95,14 @@ Inside a session, `/account` shows the account, cost and limits, and `/account <
 - `Claude Multi-Account: Switch account for this folder`
 - `Claude Multi-Account: Cost report by account`
 - `Claude Multi-Account: Add account`
+- `Claude Multi-Account: Stop idle sessions`
 - `Claude Multi-Account: Start Claude Code tabs on the folder's account`
 - `Claude Multi-Account: Refresh`
 - `Claude Multi-Account: Enter Pro license key`
+
+## Settings
+
+- `claudeMultiAccount.idleSessions.autoStopHours`: stop sessions idle longer than this many hours, checked every 30 minutes. `0` (the default) turns it off; any other value counts as at least 1 hour.
 
 ## Requirements
 
@@ -87,7 +110,7 @@ macOS, Linux or Windows, with Claude Code installed. The launcher is a shell scr
 
 ## Privacy
 
-Everything stays on your machine. The extension reads Claude Code's local config and transcripts and writes only to `~/.claude-multi-account`. The one network call is to the license server, with your key, when you enter a Pro license key.
+Everything stays on your machine. The extension reads Claude Code's local config, session files and transcripts, lists processes with `ps`, and writes only to `~/.claude-multi-account`. It signals a Claude Code process only when you stop a session, or when you turn on automatic stopping. The one network call is to the license server, with your key, when you enter a Pro license key.
 
 ## Support
 

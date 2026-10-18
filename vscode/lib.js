@@ -206,6 +206,256 @@ function short(n) {
   return String(n)
 }
 
+// ---- Idle sessions ----
+// Claude Code writes <config dir>/sessions/<pid>.json for every running session ({pid, sessionId, cwd, status, startedAt}),
+// and its transcript to <config dir>/projects/<project>/<sessionId>.jsonl. Process listing and signalling are passed in,
+// so the tests never touch a real process.
+
+// Measured on a loaded Mac over 5 seconds: idle sessions used 0.4-2.0% CPU in short bursts, working ones 3.6-21%.
+// (A session waiting on the API uses little CPU too; its status, busy, is what holds it.)
+const IDLE_CPU_PERCENT = 2.5
+// ps reports CPU time in hundredths of a second on macOS (whole seconds on Linux), so the window is several seconds.
+const CPU_SAMPLE_MS = 5000
+// A pid from a session file that belongs to a process started well after that session is a reused pid.
+const PID_START_SLACK_MS = 60_000
+
+// The config directories of the known accounts, each once (an account may be a link to another).
+function claudeDirs(p) {
+  const seen = new Set()
+  const dirs = []
+  for (const a of readAccounts(p)) {
+    let key = a.dir
+    try {
+      key = fs.realpathSync(a.dir)
+    } catch {}
+    if (seen.has(key)) continue
+    seen.add(key)
+    dirs.push(a.dir)
+  }
+  return dirs
+}
+
+// Every session file under the given config directories, one per pid.
+function readClaudeSessions(dirs) {
+  const byPid = new Map()
+  for (const dir of dirs) {
+    let files = []
+    try {
+      files = fs.readdirSync(path.join(dir, 'sessions')).filter(f => f.endsWith('.json'))
+    } catch {
+      continue
+    }
+    for (const f of files) {
+      try {
+        const d = JSON.parse(fs.readFileSync(path.join(dir, 'sessions', f), 'utf8'))
+        const pid = Number(d.pid)
+        if (!Number.isInteger(pid) || pid <= 1 || byPid.has(pid)) continue
+        byPid.set(pid, {
+          pid,
+          sessionId: typeof d.sessionId === 'string' ? d.sessionId : '',
+          cwd: typeof d.cwd === 'string' ? d.cwd : '',
+          status: d.status,
+          startedAt: typeof d.startedAt === 'number' ? d.startedAt : null,
+          dir,
+        })
+      } catch {}
+    }
+  }
+  return [...byPid.values()]
+}
+
+// The latest write to a session's transcript in any of the config directories, or null when none is found.
+function transcriptMtime(dirs, sessionId) {
+  if (!sessionId || /[\\/]/.test(sessionId)) return null
+  let latest = null
+  for (const dir of dirs) {
+    let projects = []
+    try {
+      projects = fs.readdirSync(path.join(dir, 'projects'))
+    } catch {
+      continue
+    }
+    for (const project of projects) {
+      try {
+        const m = fs.statSync(path.join(dir, 'projects', project, `${sessionId}.jsonl`)).mtimeMs
+        if (latest === null || m > latest) latest = m
+      } catch {}
+    }
+  }
+  return latest
+}
+
+// ps durations: [[dd-]hh:]mm:ss[.cc], for both elapsed time and CPU time.
+function parseDuration(text) {
+  const m = /^(?:(\d+)-)?([\d:.]+)$/.exec(String(text).trim())
+  if (!m) return null
+  const parts = m[2].split(':').map(Number)
+  if (parts.some(n => !Number.isFinite(n))) return null
+  let secs = 0
+  for (const n of parts) secs = secs * 60 + n
+  return secs + (m[1] ? Number(m[1]) * 86400 : 0)
+}
+
+// Output of `ps -o pid=,rss=,%cpu=,etime=,time=,command=`, by pid.
+function parsePs(stdout) {
+  const out = new Map()
+  for (const line of String(stdout).split('\n')) {
+    const m = /^\s*(\d+)\s+(\d+)\s+([\d.,]+)\s+(\S+)\s+(\S+)\s+(.*)$/.exec(line)
+    if (!m) continue
+    const age = parseDuration(m[4])
+    const cpuTime = parseDuration(m[5])
+    if (age === null || cpuTime === null) continue
+    out.set(Number(m[1]), {
+      rssKb: Number(m[2]),
+      pcpu: Number(m[3].replace(',', '.')),
+      ageSec: age,
+      cpuTimeSec: cpuTime,
+      command: m[6].trim(),
+    })
+  }
+  return out
+}
+
+// The real process listing (macOS and Linux). Returns an empty map when ps is not there.
+function systemPs(pids) {
+  if (pids.length === 0 || process.platform === 'win32') return new Map()
+  try {
+    const stdout = require('child_process').execFileSync(
+      'ps',
+      ['-o', 'pid=,rss=,%cpu=,etime=,time=,command=', '-p', pids.join(',')],
+      { encoding: 'utf8', timeout: 5000, env: { ...process.env, LC_ALL: 'C' }, stdio: ['ignore', 'pipe', 'ignore'] },
+    )
+    return parsePs(stdout)
+  } catch (err) {
+    // ps exits 1 when some of the pids are gone, and still prints the rest.
+    return parsePs(err.stdout ?? '')
+  }
+}
+
+// A Claude Code binary: the program itself is named claude (native install, the VS Code extension's binary),
+// or node or bun running Claude Code's script.
+function isClaudeCommand(command) {
+  const words = String(command).trim().split(/\s+/)
+  if (/claude/.test(words[0] ?? '')) return true
+  return /(^|\/)(node|bun)$/.test(words[0] ?? '') && /claude/.test(words[1] ?? '')
+}
+
+// The sessions of these config directories whose process is still a running claude, with RAM, age and quiet time.
+function surveySessions({ dirs, ps, now = Date.now(), transcripts = true }) {
+  const files = readClaudeSessions(dirs)
+  const procs = ps(files.map(s => s.pid))
+  const live = []
+  for (const s of files) {
+    const proc = procs.get(s.pid)
+    if (!proc || !isClaudeCommand(proc.command)) continue
+    const startedMs = now - proc.ageSec * 1000
+    if (s.startedAt !== null && startedMs > s.startedAt + PID_START_SLACK_MS) continue
+    const ageMs = proc.ageSec * 1000
+    const last = transcripts ? transcriptMtime(dirs, s.sessionId) : null
+    live.push({
+      ...s,
+      rssKb: proc.rssKb,
+      pcpu: proc.pcpu,
+      cpuTimeSec: proc.cpuTimeSec,
+      command: proc.command,
+      ageMs,
+      transcriptAt: last,
+      quietMs: last !== null ? Math.max(0, now - last) : ageMs,
+    })
+  }
+  return live
+}
+
+function summarizeSessions(list) {
+  return {
+    running: list.length,
+    idle: list.filter(s => s.status === 'idle').length,
+    rssKb: list.reduce((t, s) => t + (s.rssKb || 0), 0),
+  }
+}
+
+// CPU over a short window: CPU time used between two listings, over the nominal window (the real one is never
+// shorter, so this never reads low).
+async function sampleCpu(list, { ps, sleep, ms = CPU_SAMPLE_MS }) {
+  if (list.length === 0) return list
+  await sleep(ms)
+  const after = ps(list.map(s => s.pid))
+  for (const s of list) {
+    const p = after.get(s.pid)
+    if (!p || !isClaudeCommand(p.command)) {
+      s.cpu = Infinity
+      s.gone = true
+      continue
+    }
+    const delta = Math.max(0, p.cpuTimeSec - s.cpuTimeSec)
+    s.cpu = (delta / (ms / 1000)) * 100
+  }
+  return list
+}
+
+// Idle, with no transcript write (or, without a transcript, no process) for the threshold.
+function quietPast(s, thresholdMs) {
+  return s.status === 'idle' && s.quietMs >= thresholdMs && s.ageMs >= thresholdMs
+}
+
+// Why a session must not be stopped, or null when every safety rule holds. Needs a CPU sample (sampleCpu).
+function autoStopBlocker(s, thresholdMs) {
+  if (s.status !== 'idle') return `status ${s.status ?? 'unknown'}`
+  if (s.gone) return 'process gone'
+  if (!(s.cpu < IDLE_CPU_PERCENT)) return `CPU ${Number.isFinite(s.cpu) ? s.cpu.toFixed(1) + '%' : 'not sampled'}`
+  if (!(s.quietMs >= thresholdMs)) return 'active recently'
+  if (!(s.ageMs >= thresholdMs)) return 'started recently'
+  return null
+}
+
+// Stops the chosen sessions. Each one is checked again just before the signal: still idle, still the same claude
+// process, CPU still low. Returns what was stopped and what was skipped, with the reason.
+async function stopSessions(chosen, { dirs, ps, kill, sleep, sampleMs = CPU_SAMPLE_MS, thresholdMs = 0, now = () => Date.now() }) {
+  const wanted = new Map(chosen.map(s => [s.pid, s]))
+  const fresh = surveySessions({ dirs, ps, now: now() }).filter(s => wanted.has(s.pid) && s.sessionId === wanted.get(s.pid).sessionId)
+  await sampleCpu(fresh, { ps, sleep, ms: sampleMs })
+  const stopped = []
+  const skipped = []
+  for (const s of chosen) {
+    const f = fresh.find(x => x.pid === s.pid)
+    const why = f ? autoStopBlocker(f, thresholdMs) : 'no longer running'
+    if (why) {
+      skipped.push({ ...s, reason: why })
+      continue
+    }
+    try {
+      kill(f.pid, 'SIGTERM')
+      stopped.push(f)
+    } catch (err) {
+      skipped.push({ ...s, reason: err.code === 'ESRCH' ? 'no longer running' : err.message })
+    }
+  }
+  return { stopped, skipped }
+}
+
+function shellQuote(s) {
+  return /^[A-Za-z0-9_\/.,:@%+=-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`
+}
+
+// How to pick a stopped session up again. A session of another config directory than ~/.claude needs that directory.
+function resumeCommand(s, home = os.homedir()) {
+  const onDefault = !s.dir || pathKey(s.dir) === pathKey(path.join(home, '.claude'))
+  const env = onDefault ? '' : `CLAUDE_CONFIG_DIR=${shellQuote(s.dir)} `
+  return `cd ${shellQuote(s.cwd || home)} && ${env}claude --resume ${shellQuote(s.sessionId)}`
+}
+
+function formatRam(kb) {
+  const mb = kb / 1024
+  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`
+}
+
+function formatQuiet(ms) {
+  const min = Math.floor(ms / 60_000)
+  if (min < 60) return `${min} min`
+  const h = ms / 3_600_000
+  return h < 48 ? `${h.toFixed(1)} h` : `${Math.floor(h / 24)} days`
+}
+
 module.exports = {
   NOT_SIGNED_IN,
   paths,
@@ -223,4 +473,22 @@ module.exports = {
   pruneSessions,
   sessionTokens,
   short,
+  IDLE_CPU_PERCENT,
+  CPU_SAMPLE_MS,
+  claudeDirs,
+  readClaudeSessions,
+  transcriptMtime,
+  parseDuration,
+  parsePs,
+  systemPs,
+  isClaudeCommand,
+  surveySessions,
+  summarizeSessions,
+  sampleCpu,
+  quietPast,
+  autoStopBlocker,
+  stopSessions,
+  resumeCommand,
+  formatRam,
+  formatQuiet,
 }

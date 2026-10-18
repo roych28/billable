@@ -10,6 +10,10 @@ const LIMIT_NAMES = { five_hour: '5-hour limit', seven_day: 'Weekly limit' }
 const WARN_PERCENT = 90
 const NAME_RULE = /^[a-z0-9][a-z0-9-]{0,30}$/
 const EMAIL_RULE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/
+const IDLE_CHECK_MS = 30 * 60_000
+// Sessions quiet this long are pre-selected in "Stop idle sessions" when automatic stopping is off.
+const DEFAULT_IDLE_HOURS = 6
+const SESSIONS_CACHE_MS = 15_000
 
 function folders() {
   return (vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath)
@@ -68,6 +72,7 @@ function activate(context) {
         'claudeMultiAccount.switchTo',
         'claudeMultiAccount.addAccount',
         'claudeMultiAccount.costReport',
+        'claudeMultiAccount.stopIdleSessions',
         'claude-vscode.newConversation',
       ],
     }
@@ -92,18 +97,152 @@ function activate(context) {
     const s = v.status
     if (!s) {
       md.appendMarkdown(`No session on ${v.currentName} in this folder yet. Start a conversation to see its usage.`)
-      return md
+    } else {
+      const t = lib.sessionTokens(s.transcript)
+      const rows = [
+        t
+          ? `**Tokens (latest session):** ${lib.short(t.input + t.output + t.cacheRead + t.cacheWrite)} &nbsp; input ${lib.short(t.input)} · output ${lib.short(t.output)} · cache read ${lib.short(t.cacheRead)} · cache write ${lib.short(t.cacheWrite)}`
+          : '**Tokens:** transcript not found',
+        `**Cost:** ${s.usage?.usd === undefined ? 'unknown' : `$${s.usage.usd.toFixed(2)}`}`,
+        ...(s.usage?.limits ?? []).map(l => `**${LIMIT_NAMES[l.kind] ?? l.kind}:** ${l.percentUsed}%`),
+      ]
+      md.appendMarkdown(rows.join('  \n'))
     }
-    const t = lib.sessionTokens(s.transcript)
-    const rows = [
-      t
-        ? `**Tokens (latest session):** ${lib.short(t.input + t.output + t.cacheRead + t.cacheWrite)} &nbsp; input ${lib.short(t.input)} · output ${lib.short(t.output)} · cache read ${lib.short(t.cacheRead)} · cache write ${lib.short(t.cacheWrite)}`
-        : '**Tokens:** transcript not found',
-      `**Cost:** ${s.usage?.usd === undefined ? 'unknown' : `$${s.usage.usd.toFixed(2)}`}`,
-      ...(s.usage?.limits ?? []).map(l => `**${LIMIT_NAMES[l.kind] ?? l.kind}:** ${l.percentUsed}%`),
-    ]
-    md.appendMarkdown(rows.join('  \n'))
+    const fleet = sessionsSummary()
+    if (fleet && fleet.running > 0) {
+      const stop = fleet.idle > 0 ? ` &nbsp; ${link('$(debug-stop) Stop idle sessions', 'claudeMultiAccount.stopIdleSessions', [])}` : ''
+      md.appendMarkdown(
+        `\n\n$(server-process) **Claude sessions:** ${fleet.running} running · ${fleet.idle} idle · ${lib.formatRam(fleet.rssKb)} RAM${stop}`,
+      )
+    }
     return md
+  }
+
+  // ---- Idle sessions ----
+  // Process listing, signalling and waiting are swapped out by the integration tests, so they never touch a real process.
+  const idle = {
+    ps: lib.systemPs,
+    kill: (pid, signal) => process.kill(pid, signal),
+    sleep: ms => new Promise(r => setTimeout(r, ms)),
+    copy: text => vscode.env.clipboard.writeText(text),
+    sampleMs: lib.CPU_SAMPLE_MS,
+  }
+  let fleetCache = null
+
+  // Running, idle and RAM of every session on the known accounts, cached briefly: the hover refreshes often.
+  function sessionsSummary(fresh = false) {
+    if (process.platform === 'win32') return null
+    if (!fresh && fleetCache && Date.now() - fleetCache.at < SESSIONS_CACHE_MS) return fleetCache.summary
+    try {
+      const summary = lib.summarizeSessions(lib.surveySessions({ dirs: lib.claudeDirs(p), ps: idle.ps, transcripts: false }))
+      fleetCache = { at: Date.now(), summary }
+      return summary
+    } catch {
+      return null
+    }
+  }
+
+  function autoStopHours() {
+    const h = Number(vscode.workspace.getConfiguration('claudeMultiAccount').get('idleSessions.autoStopHours', 0)) || 0
+    return h <= 0 ? 0 : Math.max(1, h)
+  }
+
+  // Shows the command that resumes each stopped session; picking one copies it, or all of them at once.
+  async function showResumeCommands(stopped) {
+    if (stopped.length === 0) return
+    const all = stopped.map(s => lib.resumeCommand(s, p.home))
+    const pick = await vscode.window.showQuickPick(
+      [
+        { label: '$(copy) Copy all resume commands', command: all.join('\n') },
+        ...stopped.map((s, i) => ({ label: path.basename(s.cwd) || s.cwd, description: s.sessionId.slice(0, 8), detail: all[i], command: all[i] })),
+      ],
+      { title: 'Resume a stopped session', placeHolder: 'Pick one to copy its command, then run it in a terminal' },
+    )
+    if (!pick) return
+    await idle.copy(pick.command)
+    vscode.window.showInformationMessage('Copied. Run it in a terminal to pick the conversation up again.')
+  }
+
+  function withProgress(title, task) {
+    return vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title }, task)
+  }
+
+  function describe(list) {
+    return list.map(s => `${path.basename(s.cwd) || s.cwd} (${lib.formatQuiet(s.quietMs)})`).join(', ')
+  }
+
+  async function stopIdleSessions() {
+    if (process.platform === 'win32') {
+      return vscode.window.showInformationMessage('Stopping idle sessions works on macOS and Linux for now.')
+    }
+    const dirs = lib.claudeDirs(p)
+    const hours = autoStopHours() || DEFAULT_IDLE_HOURS
+    const thresholdMs = hours * 3_600_000
+    const list = lib.surveySessions({ dirs, ps: idle.ps }).filter(s => s.status === 'idle')
+    if (list.length === 0) {
+      return vscode.window.showInformationMessage('No idle Claude sessions are running.')
+    }
+    // CPU is sampled just before the stop, on the chosen sessions only.
+    list.sort((a, b) => b.quietMs - a.quietMs)
+    const items = list.map(s => ({
+      label: path.basename(s.cwd) || s.cwd,
+      description: `quiet ${lib.formatQuiet(s.quietMs)} · ${lib.formatRam(s.rssKb)}`,
+      detail: s.cwd,
+      picked: lib.quietPast(s, thresholdMs),
+      session: s,
+    }))
+    const chosen = await vscode.window.showQuickPick(items, {
+      canPickMany: true,
+      title: `Stop idle Claude sessions (quiet over ${hours} h are selected)`,
+      placeHolder: 'The conversations stay on disk; you get a command to resume each one',
+    })
+    if (!chosen || chosen.length === 0) return
+    const { stopped, skipped } = await withProgress('Stopping the chosen Claude sessions', () =>
+      lib.stopSessions(chosen.map(c => c.session), { dirs, ps: idle.ps, kill: idle.kill, sleep: idle.sleep, sampleMs: idle.sampleMs }),
+    )
+    fleetCache = null
+    refresh()
+    if (skipped.length) {
+      vscode.window.showWarningMessage(`Not stopped: ${skipped.map(s => `${path.basename(s.cwd) || s.cwd} (${s.reason})`).join(', ')}`)
+    }
+    if (stopped.length) await showResumeCommands(stopped)
+  }
+
+  // Stops sessions idle past the setting. One window does it per round: the others see the recent run and skip.
+  async function autoStopIdle(force = false) {
+    const hours = autoStopHours()
+    if (!hours || process.platform === 'win32') return { stopped: [], skipped: [] }
+    const lock = path.join(p.base, 'idle-stop.json')
+    if (!force) {
+      try {
+        if (Date.now() - JSON.parse(fs.readFileSync(lock, 'utf8')).at < IDLE_CHECK_MS - 60_000) return { stopped: [], skipped: [] }
+      } catch {}
+    }
+    try {
+      fs.mkdirSync(p.base, { recursive: true })
+      fs.writeFileSync(lock, JSON.stringify({ at: Date.now() }))
+    } catch {}
+    const dirs = lib.claudeDirs(p)
+    const thresholdMs = hours * 3_600_000
+    const candidates = lib
+      .surveySessions({ dirs, ps: idle.ps })
+      .filter(s => lib.quietPast(s, thresholdMs))
+    if (candidates.length === 0) return { stopped: [], skipped: [] }
+    const result = await lib.stopSessions(candidates, {
+      dirs, ps: idle.ps, kill: idle.kill, sleep: idle.sleep, sampleMs: idle.sampleMs, thresholdMs,
+    })
+    fleetCache = null
+    refresh()
+    if (result.stopped.length) {
+      const show = 'Resume commands'
+      vscode.window
+        .showInformationMessage(
+          `Claude Multi-Account stopped ${result.stopped.length} session${result.stopped.length === 1 ? '' : 's'} idle over ${hours} h: ${describe(result.stopped)}.`,
+          show,
+        )
+        .then(answer => answer === show && showResumeCommands(result.stopped))
+    }
+    return result
   }
 
   function refresh() {
@@ -268,6 +407,7 @@ function activate(context) {
     vscode.commands.registerCommand('claudeMultiAccount.switchTo', switchTo),
     vscode.commands.registerCommand('claudeMultiAccount.addAccount', addAccount),
     vscode.commands.registerCommand('claudeMultiAccount.setupLauncher', setupLauncher),
+    vscode.commands.registerCommand('claudeMultiAccount.stopIdleSessions', stopIdleSessions),
     vscode.commands.registerCommand('claudeMultiAccount.switch', async () => {
       const v = view()
       if (!v) return
@@ -308,15 +448,21 @@ function activate(context) {
   } catch {}
   const timer = setInterval(refresh, 30_000)
   context.subscriptions.push({ dispose: () => clearInterval(timer) })
+  const idleTimer = setInterval(() => autoStopIdle().catch(() => {}), IDLE_CHECK_MS)
+  context.subscriptions.push({ dispose: () => clearInterval(idleTimer) })
   context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(refresh))
   refresh()
 
   // Read by the integration tests: what the status bar shows right now.
   return {
     statusBar: () => {
+      fleetCache = null
       refresh()
       return { text: item.text, tooltip: item.tooltip?.value ?? '', visible: item.text !== '' }
     },
+    // Tests only: replace process listing, signalling and waiting with fakes.
+    setIdleDeps: deps => Object.assign(idle, deps),
+    autoStopIdleNow: () => autoStopIdle(true),
   }
 }
 

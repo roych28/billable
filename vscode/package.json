@@ -1,9 +1,9 @@
 {
   "name": "claude-multi-account",
   "displayName": "Claude Multi-Account",
-  "description": "Run each project on its own Claude account. See the account, tokens, cost and limits in the status bar, and switch with one click.",
+  "description": "Run each project on its own Claude account. See the account, tokens, cost and limits in the status bar, switch with one click, and stop idle Claude sessions that hold RAM.",
   "publisher": "roychemo",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "license": "MIT",
   "icon": "icon.png",
   "repository": {
@@ -26,7 +26,10 @@
     "usage",
     "cost",
     "invoice",
-    "billing"
+    "billing",
+    "sessions",
+    "idle",
+    "memory"
   ],
   "engines": {
     "vscode": "^1.90.0"
@@ -57,6 +60,11 @@
         "category": "Claude Multi-Account"
       },
       {
+        "command": "claudeMultiAccount.stopIdleSessions",
+        "title": "Stop idle sessions",
+        "category": "Claude Multi-Account"
+      },
+      {
         "command": "claudeMultiAccount.setupLauncher",
         "title": "Start Claude Code tabs on the folder's account",
         "category": "Claude Multi-Account"
@@ -71,7 +79,18 @@
         "title": "Enter Pro license key",
         "category": "Claude Multi-Account"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Claude Multi-Account",
+      "properties": {
+        "claudeMultiAccount.idleSessions.autoStopHours": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "markdownDescription": "Stop Claude Code sessions that have been idle longer than this many hours, checked every 30 minutes. `0` turns it off; any other value counts as at least 1 hour. A session is stopped only when Claude Code marks it idle, its transcript has not changed for that long, and its process uses almost no CPU. The conversation stays on disk, and a notification gives the command to resume it."
+        }
+      }
+    }
   },
   "devDependencies": {
     "@vscode/test-electron": "3.1.0"

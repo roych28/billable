@@ -144,3 +144,170 @@ test('the inherited account is what a folder falls back to once its own rule is 
   assert.strictEqual(lib.inheritedAccount('/elsewhere', rules), undefined)
   assert.strictEqual(lib.inheritedAccount('/w/app', [{ path: '/w/app', account: 'globex' }]), null)
 })
+
+// ---- Idle sessions: fixture config dirs and a fake process table; nothing here lists or signals a real process ----
+
+const HOUR = 3_600_000
+
+function idleFixture() {
+  const p = sandbox()
+  const now = Date.now()
+  const acme = path.join(p.home, 'claude-acme')
+  const personal = path.join(p.home, 'claude-personal')
+  fs.mkdirSync(p.base, { recursive: true })
+  fs.writeFileSync(p.accounts, `acme\t${acme}\npersonal\t${personal}\n`)
+  const session = (dir, pid, fields) => {
+    fs.mkdirSync(path.join(dir, 'sessions'), { recursive: true })
+    fs.writeFileSync(path.join(dir, 'sessions', `${pid}.json`), JSON.stringify({ pid, startedAt: now - 20 * HOUR, ...fields }))
+  }
+  const transcript = (dir, id, ageMs) => {
+    const f = path.join(dir, 'projects', '-w-app', `${id}.jsonl`)
+    fs.mkdirSync(path.dirname(f), { recursive: true })
+    fs.writeFileSync(f, '{}\n')
+    const t = (now - ageMs) / 1000
+    fs.utimesSync(f, t, t)
+  }
+  session(acme, 9101, { sessionId: 'old', cwd: '/w/app', status: 'idle' })
+  transcript(acme, 'old', 10 * HOUR)
+  session(acme, 9102, { sessionId: 'recent', cwd: '/w/api', status: 'idle' })
+  transcript(personal, 'recent', 10 * 60_000)
+  session(acme, 9103, { sessionId: 'working', cwd: '/w/web', status: 'busy' })
+  transcript(acme, 'working', 10 * HOUR)
+  session(personal, 9104, { sessionId: 'dead', cwd: '/w/x', status: 'idle' })
+  session(personal, 9105, { sessionId: 'reused', cwd: '/w/y', status: 'idle' })
+  session(personal, 9106, { sessionId: 'notranscript', cwd: '/w/my app', status: 'idle', startedAt: now - 12 * HOUR })
+  session(personal, 9107, { sessionId: 'spinning', cwd: '/w/z', status: 'idle' })
+  transcript(personal, 'spinning', 10 * HOUR)
+  // A pid reused by a claude process that started after the session file was written.
+  session(personal, 9108, { sessionId: 'newerpid', cwd: '/w/q', status: 'idle', startedAt: now - 30 * HOUR })
+  const table = new Map([
+    [9101, { rssKb: 600 * 1024, pcpu: 0, ageSec: 20 * 3600, cpuTimeSec: 50, command: '/x/native-binary/claude --output-format stream-json' }],
+    [9102, { rssKb: 300 * 1024, pcpu: 0, ageSec: 20 * 3600, cpuTimeSec: 10, command: '/Users/me/.local/share/claude/versions/2.1.300' }],
+    [9103, { rssKb: 200 * 1024, pcpu: 40, ageSec: 20 * 3600, cpuTimeSec: 900, command: 'node /usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js' }],
+    [9105, { rssKb: 100 * 1024, pcpu: 0, ageSec: 20 * 3600, cpuTimeSec: 1, command: '/usr/bin/vim notes.txt' }],
+    [9106, { rssKb: 100 * 1024, pcpu: 0, ageSec: 12 * 3600, cpuTimeSec: 3, command: '/x/claude' }],
+    [9107, { rssKb: 100 * 1024, pcpu: 0.2, ageSec: 20 * 3600, cpuTimeSec: 100, command: '/x/claude' }],
+    [9108, { rssKb: 100 * 1024, pcpu: 0, ageSec: 2 * 3600, cpuTimeSec: 1, command: '/x/claude' }],
+  ])
+  const calls = []
+  const ps = pids => {
+    calls.push(pids)
+    const out = new Map()
+    for (const pid of pids) {
+      const row = table.get(pid)
+      if (!row) continue
+      // The spinning session burns half a second of CPU between two listings.
+      if (pid === 9107) row.cpuTimeSec += calls.length > 1 ? 0.5 : 0
+      out.set(pid, { ...row })
+    }
+    return out
+  }
+  const killed = []
+  const kill = (pid, signal) => {
+    if (!table.has(pid)) throw Object.assign(new Error('no such process'), { code: 'ESRCH' })
+    killed.push([pid, signal])
+    table.delete(pid)
+  }
+  const sleep = async () => {}
+  return { p, now, acme, personal, dirs: lib.claudeDirs(p), ps, kill, killed, sleep, table }
+}
+
+test('ps durations and output parse on macOS and Linux formats', () => {
+  assert.strictEqual(lib.parseDuration('07:12:42'), 25962)
+  assert.strictEqual(lib.parseDuration('1-02:03:04'), 93784)
+  assert.strictEqual(lib.parseDuration('12:34'), 754)
+  assert.strictEqual(lib.parseDuration('11:56.39'), 716.39)
+  assert.strictEqual(lib.parseDuration('junk'), null)
+  const out = lib.parsePs(
+    '11405 533456  62.6 07:12:42  11:56.39 /Users/me/.vscode/extensions/anthropic.claude-code-2.1.301-darwin-arm64/resources/native-binary/claude --output-format stream-json\n' +
+      '  77  1024   0,0    01:02  00:00:00 /usr/bin/vim a b\n',
+  )
+  assert.deepStrictEqual(out.get(11405), {
+    rssKb: 533456, pcpu: 62.6, ageSec: 25962, cpuTimeSec: 716.39,
+    command: '/Users/me/.vscode/extensions/anthropic.claude-code-2.1.301-darwin-arm64/resources/native-binary/claude --output-format stream-json',
+  })
+  assert.strictEqual(out.get(77).pcpu, 0)
+  assert.strictEqual(out.get(77).command, '/usr/bin/vim a b')
+})
+
+test('a claude binary is recognised, other programs are not', () => {
+  assert.ok(lib.isClaudeCommand('/x/resources/native-binary/claude --verbose'))
+  assert.ok(lib.isClaudeCommand('/Users/me/.local/share/claude/versions/2.1.300'))
+  assert.ok(lib.isClaudeCommand('/usr/local/bin/node /usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js'))
+  assert.ok(!lib.isClaudeCommand('/usr/bin/vim claude.md'))
+  assert.ok(!lib.isClaudeCommand('/Applications/Claude.app/Contents/MacOS/Claude'))
+  assert.ok(!lib.isClaudeCommand(''))
+})
+
+test('the survey keeps only live claude processes of the session files, with RAM and quiet time', () => {
+  const f = idleFixture()
+  const list = lib.surveySessions({ dirs: f.dirs, ps: f.ps, now: f.now })
+  const byId = Object.fromEntries(list.map(s => [s.sessionId, s]))
+  assert.deepStrictEqual(Object.keys(byId).sort(), ['notranscript', 'old', 'recent', 'spinning', 'working'])
+  assert.ok(Math.abs(byId.old.quietMs - 10 * HOUR) < 5000, byId.old.quietMs)
+  // The transcript can sit under another account's directory.
+  assert.ok(byId.recent.quietMs < HOUR, byId.recent.quietMs)
+  // Without a transcript the process age counts.
+  assert.strictEqual(byId.notranscript.quietMs, 12 * HOUR)
+  assert.deepStrictEqual(lib.summarizeSessions(list), { running: 5, idle: 4, rssKb: 1300 * 1024 })
+  assert.strictEqual(lib.formatRam(1300 * 1024), '1.3 GB')
+  assert.strictEqual(lib.formatRam(300 * 1024), '300 MB')
+  assert.strictEqual(lib.formatQuiet(45 * 60_000), '45 min')
+  assert.strictEqual(lib.formatQuiet(10 * HOUR), '10.0 h')
+})
+
+test('the survey reads nothing outside the given directories, and an account linked to another counts once', () => {
+  const f = idleFixture()
+  fs.symlinkSync(f.acme, path.join(f.p.home, 'claude-acme-link'))
+  fs.appendFileSync(f.p.accounts, `link\t${path.join(f.p.home, 'claude-acme-link')}\n`)
+  assert.strictEqual(lib.claudeDirs(f.p).length, 2)
+  assert.deepStrictEqual(lib.readClaudeSessions([path.join(f.p.home, 'nowhere')]), [])
+})
+
+test('only sessions that pass every safety rule are stopped automatically', async () => {
+  const f = idleFixture()
+  const list = lib.surveySessions({ dirs: f.dirs, ps: f.ps, now: f.now })
+  await lib.sampleCpu(list, { ps: f.ps, sleep: f.sleep, ms: 1000 })
+  const why = Object.fromEntries(list.map(s => [s.sessionId, lib.autoStopBlocker(s, 6 * HOUR)]))
+  assert.deepStrictEqual(why, {
+    old: null,
+    recent: 'active recently',
+    working: 'status busy',
+    notranscript: null,
+    spinning: 'CPU 50.0%',
+  })
+  // What the manual list pre-selects, before any CPU sample.
+  assert.deepStrictEqual(list.filter(s => lib.quietPast(s, 6 * HOUR)).map(s => s.sessionId).sort(), ['notranscript', 'old', 'spinning'])
+  // A threshold above the process age holds even an untouched session.
+  assert.strictEqual(lib.autoStopBlocker(list.find(s => s.sessionId === 'notranscript'), 13 * HOUR), 'active recently')
+})
+
+test('stopping sends SIGTERM only to sessions that are still idle claude processes, checked again first', async () => {
+  const f = idleFixture()
+  const list = lib.surveySessions({ dirs: f.dirs, ps: f.ps, now: f.now })
+  const pick = ids => list.filter(s => ids.includes(s.sessionId))
+  // The busy one is refused even when chosen by hand, and so is one that turned busy since the list was shown.
+  fs.writeFileSync(path.join(f.personal, 'sessions', '9106.json'), JSON.stringify({ pid: 9106, sessionId: 'notranscript', cwd: '/w/my app', status: 'busy' }))
+  const r = await lib.stopSessions(pick(['old', 'working', 'notranscript', 'spinning']), { dirs: f.dirs, ps: f.ps, kill: f.kill, sleep: f.sleep })
+  assert.deepStrictEqual(f.killed, [[9101, 'SIGTERM']])
+  assert.deepStrictEqual(r.stopped.map(s => s.sessionId), ['old'])
+  // Half a second of CPU over the default five-second window.
+  assert.deepStrictEqual(Object.fromEntries(r.skipped.map(s => [s.sessionId, s.reason])), {
+    working: 'status busy',
+    notranscript: 'status busy',
+    spinning: 'CPU 10.0%',
+  })
+  // Gone by now: nothing is signalled.
+  const again = await lib.stopSessions(pick(['old']), { dirs: f.dirs, ps: f.ps, kill: f.kill, sleep: f.sleep })
+  assert.deepStrictEqual(again.skipped.map(s => s.reason), ['no longer running'])
+  assert.strictEqual(f.killed.length, 1)
+})
+
+test('the resume command goes to the folder, and names the config dir unless it is ~/.claude', () => {
+  const home = '/Users/me'
+  assert.strictEqual(lib.resumeCommand({ cwd: '/w/app', sessionId: 'abc-1', dir: '/Users/me/.claude' }, home), 'cd /w/app && claude --resume abc-1')
+  assert.strictEqual(
+    lib.resumeCommand({ cwd: "/w/my app's", sessionId: 'abc-2', dir: '/Users/me/.claude-acme' }, home),
+    `cd '/w/my app'\\''s' && CLAUDE_CONFIG_DIR=/Users/me/.claude-acme claude --resume abc-2`,
+  )
+})
