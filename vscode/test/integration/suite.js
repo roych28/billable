@@ -116,6 +116,83 @@ check('an account that is not signed in is marked in the hover', async () => {
   assert.ok(t.includes('Switch to globex (not signed in)'), t)
 })
 
+// Stands in for the person at the keyboard: each stub answers one prompt, then the real one is back.
+function answer(fn, value) {
+  const real = vscode.window[fn]
+  const seen = []
+  vscode.window[fn] = async (...args) => {
+    seen.push(args)
+    return typeof value === 'function' ? value(...args) : value
+  }
+  return { seen, restore: () => { vscode.window[fn] = real } }
+}
+
+check('add account creates its config folder, records it and opens a terminal signed to it', async () => {
+  const input = answer('showInputBox', 'initech')
+  const info = answer('showInformationMessage', undefined)
+  const before = vscode.window.terminals.length
+  try {
+    await vscode.commands.executeCommand('claudeMultiAccount.addAccount')
+  } finally {
+    input.restore()
+    info.restore()
+  }
+  const accounts = fs.readFileSync(path.join(base, 'accounts'), 'utf8')
+  assert.ok(accounts.includes('initech\t~/.claude-initech'), accounts)
+  const term = await until('the login terminal', () => vscode.window.terminals.find(t => t.name === 'Claude login: initech'))
+  assert.ok(vscode.window.terminals.length > before)
+  assert.strictEqual(term.creationOptions.env.CLAUDE_CONFIG_DIR, path.join(tmp, '.claude-initech'))
+  assert.ok(fs.statSync(path.join(tmp, '.claude-initech')).isDirectory(), 'the config folder was not created')
+  const nameRule = input.seen[0][0].validateInput
+  assert.strictEqual(nameRule('Bad Name'), 'Use lowercase letters, digits and dashes')
+  assert.strictEqual(nameRule('client-2'), null)
+  term.dispose()
+})
+
+check('add account refuses a name that already exists', async () => {
+  const input = answer('showInputBox', 'acme')
+  const error = answer('showErrorMessage', undefined)
+  try {
+    await vscode.commands.executeCommand('claudeMultiAccount.addAccount')
+  } finally {
+    input.restore()
+    error.restore()
+  }
+  assert.strictEqual(error.seen[0][0], 'An account named acme already exists')
+})
+
+check('the cost report opens a monthly table per account, and exports a CSV', async () => {
+  const ledger = path.join(base, 'ledger')
+  fs.mkdirSync(ledger, { recursive: true })
+  const now = Date.now()
+  const row = (id, account, usd) =>
+    fs.writeFileSync(path.join(ledger, `${id}.json`), JSON.stringify({ sessionId: id, account, email: `${account}@test`, folder: workspace, startedAt: now, updatedAt: now, usd }))
+  row('r1', 'acme', 1.25)
+  row('r2', 'acme', 0.75)
+  row('r3', 'personal', 3)
+  const month = require('../../report').monthOf(now)
+  const csvPath = path.join(tmp, `cost-${month}.csv`)
+  const pick = answer('showQuickPick', items => items.find(i => i.month === month))
+  const info = answer('showInformationMessage', 'Export CSV')
+  const save = answer('showSaveDialog', vscode.Uri.file(csvPath))
+  try {
+    await vscode.commands.executeCommand('claudeMultiAccount.costReport')
+  } finally {
+    pick.restore()
+    info.restore()
+    save.restore()
+  }
+  const doc = vscode.workspace.textDocuments.find(d => d.getText().startsWith(`# Claude cost by account, ${month}`))
+  assert.ok(doc, 'the report document did not open')
+  const text = doc.getText()
+  assert.ok(text.includes('| **personal** | personal@test | 1 | **$3.00** |'), text)
+  assert.ok(text.includes('| **acme** | acme@test | 2 | **$2.00** |'), text)
+  assert.ok(text.includes('| Total | | 3 | **$5.00** |'), text)
+  const csv = fs.readFileSync(csvPath, 'utf8').trim().split('\n')
+  assert.strictEqual(csv.length, 4, csv.join('\n'))
+  assert.ok(csv[0].startsWith('month,account,email,folder'), csv[0])
+})
+
 check('setting up the launcher without the Claude Code extension warns instead of failing', async () => {
   await Promise.race([
     vscode.commands.executeCommand('claudeMultiAccount.setupLauncher'),

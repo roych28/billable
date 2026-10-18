@@ -24,7 +24,7 @@ async function main() {
     extensionDevelopmentPath: path.resolve(__dirname, '../..'),
     extensionTestsPath: path.resolve(__dirname, 'suite.js'),
     launchArgs: [workspace, '--disable-extensions', '--user-data-dir', path.join(tmp, 'user-data')],
-    extensionTestsEnv: { CLAUDE_MULTI_ACCOUNT_HOME: base, CMA_TEST_ROOT: tmp },
+    extensionTestsEnv: { CLAUDE_MULTI_ACCOUNT_HOME: base, CMA_TEST_ROOT: tmp, HOME: tmp },
   })
 }
 
