@@ -77,17 +77,20 @@ test('the first added account also records the existing default one', () => {
   assert.throws(() => lib.addAccount(p, 'acme', '~/.claude-acme'), /already exists/)
 })
 
-test('the shell launcher picks the same account as the extension', () => {
+test('the launcher picks the same account as the extension', () => {
   const p = sandbox()
   fs.mkdirSync(p.base, { recursive: true })
   fs.writeFileSync(p.accounts, 'personal\t~/.claude\nacme\t~/.claude-acme\nglobex\t~/.claude-globex\n')
   fs.writeFileSync(p.folders, '*\tpersonal\n~/w\tacme\n~/w/globex\tglobex\n')
-  const cma = path.join(__dirname, '..', 'bin', 'cma')
-  const env = { ...process.env, HOME: p.home, CLAUDE_MULTI_ACCOUNT_HOME: p.base }
-  const dirFor = d => execFileSync('sh', [cma, 'dir', path.join(p.home, d)], { env }).toString().trim()
+  const win = process.platform === 'win32'
+  const cma = path.join(__dirname, '..', ...(win ? ['bin', 'win32', 'cma.exe'] : ['bin', 'cma']))
+  const env = { ...process.env, HOME: p.home, USERPROFILE: p.home, CLAUDE_MULTI_ACCOUNT_HOME: p.base }
+  const launch = args => (win ? execFileSync(cma, args, { env }) : execFileSync('sh', [cma, ...args], { env }))
+  const dirFor = d => launch(['dir', path.join(p.home, d)]).toString().trim()
   assert.strictEqual(dirFor('w/globex/api'), path.join(p.home, '.claude-globex'))
   assert.strictEqual(dirFor('w/app'), path.join(p.home, '.claude-acme'))
   assert.strictEqual(dirFor('elsewhere'), path.join(p.home, '.claude'))
+  if (win) return // exec on Windows is covered by the launcher's own Go tests
 
   const run = cwd =>
     execFileSync('sh', [cma, 'exec', 'sh', '-c', 'printf %s "${CLAUDE_CONFIG_DIR-unset}"'], {
