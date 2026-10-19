@@ -1,7 +1,7 @@
 # Billable for JetBrains IDEs
 
 Run every project on the right Claude account, and always know which one you are on. A port of the
-[Billable](https://github.com/roych28/claude-multi-account) VS Code extension (formerly Billable) to IntelliJ IDEA, PyCharm,
+[Billable](https://github.com/roych28/claude-multi-account) VS Code extension (formerly Claude Multi-Account) to IntelliJ IDEA, PyCharm,
 WebStorm, GoLand and the other IntelliJ-based IDEs, 2025.2 and later.
 
 Freelancers and consultants often hold a Claude account per client, plus a personal one. Claude Code signs in once
@@ -36,7 +36,7 @@ Everything is also under **Tools > Billable**.
    claude plugin install multi-account --marketplace roych28/claude-multi-account
    ```
 2. Install this plugin (for now from disk: **Settings > Plugins > gear > Install Plugin from Disk**, and pick
-   `build/distributions/claude-multi-account-jetbrains-<version>.zip`).
+   `build/distributions/billable-jetbrains-<version>.zip`).
 3. Add the shell function above to your shell profile.
 4. Accounts are added as in the VS Code extension or by hand: one line per account in
    `~/.claude-multi-account/accounts` (`name<TAB>config dir`), then sign in once with
