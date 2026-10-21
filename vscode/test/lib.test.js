@@ -311,3 +311,58 @@ test('the resume command goes to the folder, and names the config dir unless it 
     `cd '/w/my app'\\''s' && CLAUDE_CONFIG_DIR=/Users/me/.claude-acme claude --resume abc-2`,
   )
 })
+
+function pluginAccount(home, name, { installedFrom, source, enabled } = {}) {
+  const dir = path.join(home, `.claude-${name}`)
+  fs.mkdirSync(path.join(dir, 'plugins'), { recursive: true })
+  if (installedFrom) {
+    fs.writeFileSync(
+      path.join(dir, 'plugins', 'installed_plugins.json'),
+      JSON.stringify({ version: 2, plugins: { [`multi-account@${installedFrom}`]: [{ scope: 'user' }], 'figma@x': [] } }),
+    )
+    if (source) fs.writeFileSync(path.join(dir, 'plugins', 'known_marketplaces.json'), JSON.stringify({ [installedFrom]: { source } }))
+  }
+  if (enabled !== undefined) {
+    fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ enabledPlugins: { 'multi-account@claude-multi-account': enabled } }))
+  }
+  return { name, dir }
+}
+
+test('a new account is installed from the marketplace another account uses, else from GitHub', () => {
+  const { home } = sandbox()
+  const empty = pluginAccount(home, 'empty')
+  assert.deepStrictEqual(lib.pluginSource([empty]), lib.PUBLIC_MARKETPLACE)
+  const local = pluginAccount(home, 'local', { installedFrom: 'mine', source: { source: 'directory', path: '/src/cma' } })
+  assert.deepStrictEqual(lib.pluginSource([empty, local]), { name: 'mine', arg: '/src/cma' })
+  const gh = pluginAccount(home, 'gh', { installedFrom: 'claude-multi-account', source: { source: 'github', repo: 'roych28/claude-multi-account' } })
+  assert.deepStrictEqual(lib.pluginSource([gh, local]), lib.PUBLIC_MARKETPLACE)
+  assert.deepStrictEqual(lib.pluginInstallSteps({ name: 'mine', arg: '/src/cma' }), [
+    ['plugin', 'marketplace', 'add', '/src/cma'],
+    ['plugin', 'install', 'multi-account@mine'],
+  ])
+})
+
+test('accounts missing the plugin get it only once it runs on another account, and never when turned off', () => {
+  const { home } = sandbox()
+  const fresh = pluginAccount(home, 'fresh')
+  const off = pluginAccount(home, 'off', { enabled: false })
+  assert.deepStrictEqual(lib.accountsMissingPlugin([fresh, off]), [])
+  const on = pluginAccount(home, 'on', { installedFrom: 'claude-multi-account' })
+  const gone = { name: 'gone', dir: path.join(home, '.claude-gone') }
+  assert.strictEqual(lib.pluginState(on.dir), 'installed')
+  assert.strictEqual(lib.pluginState(off.dir), 'disabled')
+  assert.strictEqual(lib.pluginState(fresh.dir), 'missing')
+  assert.deepStrictEqual(lib.accountsMissingPlugin([on, fresh, off, gone]).map(a => a.name), ['fresh'])
+})
+
+test('claude comes from the Claude Code extension when it ships one, else from PATH', () => {
+  const { home } = sandbox()
+  const ext = path.join(home, 'anthropic.claude-code')
+  assert.strictEqual(lib.claudeBinary(undefined), 'claude')
+  assert.strictEqual(lib.claudeBinary(ext, 'darwin'), 'claude')
+  fs.mkdirSync(path.join(ext, 'resources', 'native-binary'), { recursive: true })
+  fs.writeFileSync(path.join(ext, 'resources', 'native-binary', 'claude'), '')
+  fs.writeFileSync(path.join(ext, 'resources', 'native-binary', 'claude.exe'), '')
+  assert.strictEqual(lib.claudeBinary(ext, 'darwin'), path.join(ext, 'resources', 'native-binary', 'claude'))
+  assert.strictEqual(lib.claudeBinary(ext, 'win32'), path.join(ext, 'resources', 'native-binary', 'claude.exe'))
+})

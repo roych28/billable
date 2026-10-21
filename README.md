@@ -14,7 +14,7 @@ Freelancers and consultants often hold a Claude account per client, plus a perso
 
 - **The account in the status bar.** The account this folder runs on, the session's tokens and cost, and the highest rate-limit usage. The item turns amber at 90% of a limit.
 - **Switch in one click.** Hover the item: the account and its email come first, then a button for every other account. The choice is saved per folder, so each project keeps its own account and you can work on several at once.
-- **Add accounts from VS Code.** `Add account` creates a config directory for the new account and opens a terminal to sign in.
+- **Add accounts from VS Code.** `Add account` creates a config directory for the new account, installs the companion plugin into it, and opens a terminal to sign in. An account you added earlier, or by hand, gets the plugin the next time VS Code starts, once the plugin runs on any of your accounts. An account where you turned the plugin off is left alone.
 - **Pick up where you stopped.** After a switch, start a new conversation right where you are: it receives the last request, the last answer and the path of the previous transcript, so the work continues on the new account without repeating yourself.
 - **Real token counts.** Tokens are read from the session transcript: input, output, cache reads and cache writes, for the whole session, resumed sessions included.
 - **Cost report by account.** What each account, and each folder under it, cost in a month. One account per client means one line per client on your invoice. Open it from the hover or with `Billable: Cost report by account`.
@@ -52,7 +52,7 @@ Pro adds the full history of the cost report, beyond the current and the previou
    claude plugin install multi-account --marketplace roych28/claude-multi-account
    ```
 2. When the extension asks, let it start Claude Code tabs on each folder's account. It sets `claudeCode.claudeProcessWrapper` to a small launcher in `~/.claude-multi-account/bin`.
-3. Run **Billable: Add account** for each client and sign in.
+3. Run **Billable: Add account** for each client and sign in. The plugin is installed into each new account for you.
 4. Open a project, click the account in the status bar, and pick the account it should run on.
 
 ## How it works

@@ -2,6 +2,7 @@ const vscode = require('vscode')
 const fs = require('fs')
 const path = require('path')
 const os = require('os')
+const { execFile } = require('child_process')
 const lib = require('./lib')
 const report = require('./report')
 const { createLicense } = require('./pro')
@@ -33,6 +34,25 @@ function installBin(context, p) {
   }
 }
 
+function run(file, args, env) {
+  return new Promise((resolve, reject) =>
+    execFile(file, args, { env, timeout: 120_000 }, (err, stdout, stderr) =>
+      err ? reject(new Error(String(stderr || stdout || err.message).trim().split('\n').pop())) : resolve(),
+    ),
+  )
+}
+
+// Installs this extension's Claude Code plugin (the account above the prompt, /account) into one account.
+async function installPlugin(p, dir) {
+  const env = { ...process.env, CLAUDE_CONFIG_DIR: dir }
+  if (lib.pathKey(dir) === lib.pathKey(path.join(p.home, '.claude'))) delete env.CLAUDE_CONFIG_DIR
+  const bin = lib.claudeBinary(vscode.extensions.getExtension('anthropic.claude-code')?.extensionPath)
+  const [addMarketplace, install] = lib.pluginInstallSteps(lib.pluginSource(lib.readAccounts(p)))
+  // Fails when the marketplace is already there; the install below is what has to succeed.
+  await run(bin, addMarketplace, env).catch(() => {})
+  await run(bin, install, env)
+}
+
 function activate(context) {
   const p = lib.paths()
   try {
@@ -42,6 +62,8 @@ function activate(context) {
   }
   lib.pruneSessions(p)
   const license = createLicense({ secrets: context.secrets })
+  // Replaced by the integration tests, which must not run claude.
+  const plugin = { install: dir => installPlugin(p, dir) }
 
   const item = vscode.window.createStatusBarItem('claudeMultiAccount', vscode.StatusBarAlignment.Left, 100)
   item.name = 'Billable'
@@ -305,6 +327,12 @@ function activate(context) {
     } catch (err) {
       return vscode.window.showErrorMessage(err.message)
     }
+    // Before the sign-in, so the first session on the new account already shows the account above the prompt.
+    await withProgress(`Adding the Billable plugin to ${name}`, () =>
+      plugin.install(lib.expand(dir, p.home)).catch(err => {
+        vscode.window.showWarningMessage(`Billable could not add its plugin to ${name}: ${err.message}`)
+      }),
+    )
     const terminal = vscode.window.createTerminal({
       name: `Claude login: ${name}`,
       env: { CLAUDE_CONFIG_DIR: lib.expand(dir, p.home) },
@@ -453,6 +481,20 @@ function activate(context) {
   context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(refresh))
   refresh()
 
+  // Accounts added before the plugin was installed with them, or by hand, get it now, one after another.
+  const healed = (async () => {
+    for (const a of lib.accountsMissingPlugin(lib.readAccounts(p))) {
+      try {
+        await plugin.install(a.dir)
+        vscode.window.showInformationMessage(
+          `Billable added its plugin to ${a.name}. New Claude sessions on ${a.name} show the account above the prompt.`,
+        )
+      } catch (err) {
+        vscode.window.showWarningMessage(`Billable could not add its plugin to ${a.name}: ${err.message}`)
+      }
+    }
+  })()
+
   // Read by the integration tests: what the status bar shows right now.
   return {
     statusBar: () => {
@@ -463,6 +505,8 @@ function activate(context) {
     // Tests only: replace process listing, signalling and waiting with fakes.
     setIdleDeps: deps => Object.assign(idle, deps),
     autoStopIdleNow: () => autoStopIdle(true),
+    pluginHealed: () => healed,
+    setPluginInstaller: install => (plugin.install = install),
   }
 }
 

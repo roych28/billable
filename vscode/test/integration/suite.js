@@ -21,10 +21,16 @@ async function until(what, fn, ms = 5000) {
 const checks = []
 const check = (name, fn) => checks.push({ name, fn })
 let api
+// Every plugin install the extension asks for; none runs claude.
+const pluginInstalls = []
 
 check('the extension activates and registers every command', async () => {
   const ext = vscode.extensions.getExtension('roychemo.billable')
   api = await ext.activate()
+  api.setPluginInstaller(async dir => pluginInstalls.push(dir))
+  // The test accounts have no plugin anywhere, so nothing is installed on its own.
+  await api.pluginHealed()
+  assert.deepStrictEqual(pluginInstalls, [])
   const all = await vscode.commands.getCommands(true)
   for (const c of ['switch', 'switchTo', 'addAccount', 'setupLauncher', 'refresh', 'costReport', 'enterLicense', 'stopIdleSessions']) {
     assert.ok(all.includes(`claudeMultiAccount.${c}`), `missing claudeMultiAccount.${c}`)
@@ -161,8 +167,11 @@ check('add account creates its folder, records it and signs in with claude auth 
   const input = answers('showInputBox', [name, 'me@client.test'])
   const info = answer('showInformationMessage', undefined)
   const term = fakeTerminal()
+  const installs = pluginInstalls.length
+  api.setPluginInstaller(async d => pluginInstalls.push({ dir: d, terminals: term.made.length }))
   try {
     await vscode.commands.executeCommand('claudeMultiAccount.addAccount')
+    assert.deepStrictEqual(pluginInstalls.slice(installs), [{ dir, terminals: 0 }], 'the plugin goes into the new account before the sign-in')
     const accounts = fs.readFileSync(path.join(base, 'accounts'), 'utf8')
     assert.ok(accounts.includes(`${name}\t~/.claude-${name}`), accounts)
     assert.ok(fs.statSync(dir).isDirectory(), 'the config folder was not created')

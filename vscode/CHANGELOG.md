@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.1
+
+- **New accounts get the plugin.** `Add account` installs the companion Claude Code plugin into the new account before you sign in, so its first session already shows the account, cost and limits above the prompt and has `/account`. It installs from the same place your other accounts use, or from GitHub.
+- Accounts that are missing the plugin, because they were added before this version or by hand, get it when VS Code starts, as long as the plugin runs on another of your accounts. An account where the plugin is turned off is left alone.
+- The install uses the `claude` binary inside the Claude Code extension, so `claude` does not need to be on your PATH.
+
 ## 0.6.0
 
 - **Renamed to Billable** (formerly Claude Multi-Account), now listed as `roychemo.billable`. Settings, commands and `~/.claude-multi-account` keep their names, so nothing needs to be set up again.

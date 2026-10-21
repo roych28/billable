@@ -116,6 +116,70 @@ function addAccount(p, name, dir) {
   fs.mkdirSync(expand(dir, p.home), { recursive: true })
 }
 
+const PLUGIN = 'multi-account'
+const PUBLIC_MARKETPLACE = { name: 'claude-multi-account', arg: 'roych28/claude-multi-account' }
+
+function readJson(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+// The marketplace an account installed this plugin from, or null when the plugin is not installed there.
+function installedMarketplace(dir) {
+  const installed = readJson(path.join(dir, 'plugins', 'installed_plugins.json'))?.plugins ?? {}
+  const key = Object.keys(installed).find(k => k.startsWith(`${PLUGIN}@`))
+  return key ? key.slice(PLUGIN.length + 1) : null
+}
+
+// 'installed', 'disabled' (the user turned it off: leave it), or 'missing'.
+function pluginState(dir) {
+  const market = installedMarketplace(dir)
+  const enabled = readJson(path.join(dir, 'settings.json'))?.enabledPlugins ?? {}
+  const keys = Object.keys(enabled).filter(k => k.startsWith(`${PLUGIN}@`))
+  if (keys.length && keys.every(k => enabled[k] === false)) return 'disabled'
+  return market ? 'installed' : 'missing'
+}
+
+// Where a new account gets the plugin from: the same marketplace another account already uses (a local checkout
+// stays local), else the public GitHub repo.
+function pluginSource(accounts) {
+  for (const a of accounts) {
+    const name = installedMarketplace(a.dir)
+    if (!name) continue
+    const s = readJson(path.join(a.dir, 'plugins', 'known_marketplaces.json'))?.[name]?.source
+    const arg = s?.source === 'github' ? s.repo : s?.source === 'directory' ? s.path : s?.url
+    if (arg) return { name, arg }
+  }
+  return PUBLIC_MARKETPLACE
+}
+
+// The claude commands that install the plugin into one account, run with CLAUDE_CONFIG_DIR set to it.
+function pluginInstallSteps(source) {
+  return [
+    ['plugin', 'marketplace', 'add', source.arg],
+    ['plugin', 'install', `${PLUGIN}@${source.name}`],
+  ]
+}
+
+// Accounts that should get the plugin without asking: those missing it, once the user runs it on another account.
+function accountsMissingPlugin(accounts) {
+  const states = accounts.map(a => ({ ...a, state: pluginState(a.dir) }))
+  if (!states.some(a => a.state === 'installed')) return []
+  return states.filter(a => a.state === 'missing' && fs.existsSync(a.dir))
+}
+
+// The claude binary inside the Claude Code extension, so installing does not depend on claude being on PATH.
+function claudeBinary(claudeCodePath, platform = process.platform) {
+  if (claudeCodePath) {
+    const bin = path.join(claudeCodePath, 'resources', 'native-binary', platform === 'win32' ? 'claude.exe' : 'claude')
+    if (fs.existsSync(bin)) return bin
+  }
+  return 'claude'
+}
+
 function isInside(dir, root, platform = process.platform) {
   const d = pathKey(dir, platform)
   const r = pathKey(root, platform)
@@ -469,6 +533,13 @@ module.exports = {
   emailOf,
   pin,
   addAccount,
+  PLUGIN,
+  PUBLIC_MARKETPLACE,
+  pluginState,
+  pluginSource,
+  pluginInstallSteps,
+  accountsMissingPlugin,
+  claudeBinary,
   latestStatus,
   pruneSessions,
   sessionTokens,
