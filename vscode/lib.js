@@ -222,6 +222,20 @@ function folderView(p, roots) {
   return { folder, accounts, status, openOn, currentName, email }
 }
 
+// Accounts signed in as the same Claude account. A sign-in typed in a terminal goes to the folder's account, so
+// signing in "the new one" from the wrong folder silently replaces another account's sign-in.
+function sharedSignIns(p, accounts) {
+  const byEmail = new Map()
+  for (const a of accounts) {
+    const email = emailOf(a.dir, p.home)
+    if (email === NOT_SIGNED_IN) continue
+    const key = email.toLowerCase()
+    if (!byEmail.has(key)) byEmail.set(key, { email, names: [] })
+    byEmail.get(key).names.push(a.name)
+  }
+  return [...byEmail.values()].filter(s => s.names.length > 1)
+}
+
 function pruneSessions(p, maxAgeMs = 7 * 24 * 60 * 60 * 1000) {
   try {
     for (const f of fs.readdirSync(p.sessions)) {
@@ -559,6 +573,7 @@ module.exports = {
   claudeBinary,
   latestStatus,
   folderView,
+  sharedSignIns,
   pruneSessions,
   sessionTokens,
   short,

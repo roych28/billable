@@ -32,7 +32,7 @@ check('the extension activates and registers every command', async () => {
   await api.pluginHealed()
   assert.deepStrictEqual(pluginInstalls, [])
   const all = await vscode.commands.getCommands(true)
-  for (const c of ['switch', 'switchTo', 'addAccount', 'setupLauncher', 'refresh', 'costReport', 'enterLicense', 'stopIdleSessions']) {
+  for (const c of ['switch', 'switchTo', 'addAccount', 'signIn', 'setupLauncher', 'refresh', 'costReport', 'enterLicense', 'stopIdleSessions']) {
     assert.ok(all.includes(`claudeMultiAccount.${c}`), `missing claudeMultiAccount.${c}`)
   }
 })
@@ -481,6 +481,72 @@ unixCheck('with autoStopHours set, the check stops only sessions idle past it an
   const off = await api.autoStopIdleNow()
   assert.deepStrictEqual(off.stopped, [], 'with the setting at 0 nothing is stopped')
   assert.deepStrictEqual(idleFake.killed, [])
+})
+
+// A real terminal, with a stand-in for claude that records how it was started and signs in. VS Code runs with the
+// real home here, so a shell started on the way would run the person's profile (and any claude() wrapper in it).
+unixCheck('add account signs in through a real terminal with the new account, and says so when the terminal closes', async () => {
+  const name = `cmatest${Date.now().toString(36)}r`
+  const dir = path.join(os.homedir(), `.claude-${name}`)
+  const record = path.join(tmp, `${name}.log`)
+  const fake = path.join(tmp, 'fake-claude')
+  fs.writeFileSync(
+    fake,
+    [
+      '#!/bin/sh',
+      `printf '%s\\n' "$*" "$CLAUDE_CONFIG_DIR" > '${record}'`,
+      `printf '{"oauthAccount":{"emailAddress":"%s"}}' "$4" > "$CLAUDE_CONFIG_DIR/.claude.json"`,
+      '',
+    ].join('\n'),
+    { mode: 0o755 },
+  )
+  api.setClaude(fake)
+  const input = answers('showInputBox', [name, 'me@client.test'])
+  const info = answer('showInformationMessage', undefined)
+  try {
+    await vscode.commands.executeCommand('claudeMultiAccount.addAccount')
+    await until('the sign-in to end', () => info.seen.some(a => a[0] === `${name} is signed in as me@client.test.`), 15000)
+    assert.deepStrictEqual(fs.readFileSync(record, 'utf8').split('\n'), ['auth login --email me@client.test', dir, ''])
+  } finally {
+    api.setClaude(undefined)
+    input.restore()
+    info.restore()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+check('two accounts on one Claude account are flagged once, and "Sign in again" signs the chosen one in', async () => {
+  const dirs = ['shared1', 'shared2'].map(n => path.join(tmp, `claude-${n}`))
+  for (const d of dirs) {
+    fs.mkdirSync(d, { recursive: true })
+    signedInAs(d, 'me@same.test')
+  }
+  fs.appendFileSync(path.join(base, 'accounts'), `shared1\t${dirs[0]}\nshared2\t${dirs[1]}\n`)
+  const warn = answer('showWarningMessage', 'Sign in to shared2 again')
+  const info = answer('showInformationMessage', undefined)
+  const term = fakeTerminal()
+  try {
+    await vscode.commands.executeCommand('claudeMultiAccount.refresh')
+    await vscode.commands.executeCommand('claudeMultiAccount.refresh')
+    const shared = warn.seen.filter(a => /shared1 and shared2 are signed in as the same Claude account, me@same\.test/.test(a[0]))
+    assert.strictEqual(shared.length, 1, 'warned once, not on every refresh')
+    await until('the sign-in terminal', () => term.made.length === 1)
+    assertLogin(term.made[0], dirs[1], ['auth', 'login'])
+    const t = api.statusBar().tooltip
+    assert.ok(t.includes('**shared1** and **shared2** are signed in as the same Claude account, me@same.test'), t)
+    assert.ok(t.includes('command:claudeMultiAccount.signIn?'), t)
+
+    // ~/.claude is the account with no CLAUDE_CONFIG_DIR, so its sign-in runs without one. The terminal is a stand-in.
+    fs.appendFileSync(path.join(base, 'accounts'), 'sharedhome\t~/.claude\n')
+    await vscode.commands.executeCommand('claudeMultiAccount.signIn', 'sharedhome')
+    assert.strictEqual(term.made[1].options.env.CLAUDE_CONFIG_DIR, null)
+  } finally {
+    warn.restore()
+    info.restore()
+    term.restore()
+    const kept = fs.readFileSync(path.join(base, 'accounts'), 'utf8').split('\n').filter(l => !l.startsWith('shared'))
+    fs.writeFileSync(path.join(base, 'accounts'), kept.join('\n'))
+  }
 })
 
 check('setting up the launcher without the Claude Code extension warns instead of failing', async () => {

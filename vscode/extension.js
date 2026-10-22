@@ -68,6 +68,8 @@ function activate(context) {
   const license = createLicense({ secrets: context.secrets })
   // Replaced by the integration tests, which must not run claude.
   const plugin = { install: dir => installPlugin(p, dir) }
+  // Replaced by the integration tests, which sign in with a stand-in for claude in a real terminal.
+  const login = { claude: claudePath }
 
   const item = vscode.window.createStatusBarItem('claudeMultiAccount', vscode.StatusBarAlignment.Left, 100)
   item.name = 'Billable'
@@ -84,6 +86,7 @@ function activate(context) {
       enabledCommands: [
         'claudeMultiAccount.switchTo',
         'claudeMultiAccount.addAccount',
+        'claudeMultiAccount.signIn',
         'claudeMultiAccount.costReport',
         'claudeMultiAccount.stopIdleSessions',
         'claude-vscode.newConversation',
@@ -100,6 +103,7 @@ function activate(context) {
     buttons.push(link('$(add) Add account', 'claudeMultiAccount.addAccount', []))
     buttons.push(link('$(graph) Cost report', 'claudeMultiAccount.costReport', []))
     md.appendMarkdown(buttons.join(' &nbsp;&nbsp; ') + '\n\n')
+    for (const s of lib.sharedSignIns(p, v.accounts)) md.appendMarkdown(`${sharedText(s)}\n\n`)
     if (v.openOn) {
       md.appendMarkdown(
         `$(warning) The open conversation still runs on **${v.openOn}**. ${link('Start a new conversation', 'claude-vscode.newConversation', [])} to move it to **${v.currentName}**.\n\n`,
@@ -261,6 +265,7 @@ function activate(context) {
   function refresh() {
     const v = view()
     if (!v) return item.hide()
+    warnShared(v.accounts)
     const parts = [`$(account) ${v.currentName}`]
     let top = 0
     if (v.status) {
@@ -276,6 +281,48 @@ function activate(context) {
     item.tooltip = tooltip(v)
     item.backgroundColor = top >= WARN_PERCENT ? new vscode.ThemeColor('statusBarItem.warningBackground') : undefined
     item.show()
+  }
+
+  function sharedText(s) {
+    const names = s.names.map(n => `**${n}**`).join(' and ')
+    const again = s.names.map(n => link(`Sign in to ${n} again`, 'claudeMultiAccount.signIn', [n])).join(' &nbsp; ')
+    return `$(warning) ${names} are signed in as the same Claude account, ${s.email}. ${again}`
+  }
+
+  // Once per VS Code window for each set of accounts sharing a sign-in.
+  const warned = new Set()
+  function warnShared(accounts) {
+    for (const s of lib.sharedSignIns(p, accounts)) {
+      const key = `${s.email.toLowerCase()} ${s.names.join(' ')}`
+      if (warned.has(key)) continue
+      warned.add(key)
+      const buttons = s.names.map(n => `Sign in to ${n} again`)
+      vscode.window
+        .showWarningMessage(
+          `${s.names.join(' and ')} are signed in as the same Claude account, ${s.email}, so they share one plan and its limits. Sign in again to the one that should use another account.`,
+          ...buttons,
+        )
+        .then(pick => {
+          const name = s.names[buttons.indexOf(pick)]
+          if (name) signInAgain(name)
+        })
+    }
+  }
+
+  async function signInAgain(name) {
+    const accounts = lib.readAccounts(p)
+    const pick =
+      name ??
+      (await vscode.window.showQuickPick(
+        accounts.map(a => a.name),
+        { title: 'Sign in to which account?' },
+      ))
+    const account = accounts.find(a => a.name === pick)
+    if (!account) return
+    signIn(account.name, account.dir)
+    vscode.window.showInformationMessage(
+      `Sign in to ${account.name} in the browser that opens. If the browser is signed in to another Claude account, sign out there first.`,
+    )
   }
 
   async function switchTo(name) {
@@ -336,9 +383,10 @@ function activate(context) {
   function signIn(name, dir, email) {
     const terminal = vscode.window.createTerminal({
       name: `Claude login: ${name}`,
-      shellPath: claudePath(),
+      shellPath: login.claude(),
       shellArgs: email ? ['auth', 'login', '--email', email] : ['auth', 'login'],
-      env: { CLAUDE_CONFIG_DIR: dir },
+      // ~/.claude is the account with no CLAUDE_CONFIG_DIR: naming it would make claude look for another sign-in.
+      env: { CLAUDE_CONFIG_DIR: lib.pathKey(dir) === lib.pathKey(path.join(p.home, '.claude')) ? null : dir },
     })
     const closed = vscode.window.onDidCloseTerminal(async t => {
       if (t !== terminal) return
@@ -451,6 +499,7 @@ function activate(context) {
     vscode.commands.registerCommand('claudeMultiAccount.refresh', refresh),
     vscode.commands.registerCommand('claudeMultiAccount.switchTo', switchTo),
     vscode.commands.registerCommand('claudeMultiAccount.addAccount', addAccount),
+    vscode.commands.registerCommand('claudeMultiAccount.signIn', signInAgain),
     vscode.commands.registerCommand('claudeMultiAccount.setupLauncher', setupLauncher),
     vscode.commands.registerCommand('claudeMultiAccount.stopIdleSessions', stopIdleSessions),
     vscode.commands.registerCommand('claudeMultiAccount.switch', async () => {
@@ -524,6 +573,7 @@ function activate(context) {
     autoStopIdleNow: () => autoStopIdle(true),
     pluginHealed: () => healed,
     setPluginInstaller: install => (plugin.install = install),
+    setClaude: file => (login.claude = file ? () => file : claudePath),
   }
 }
 

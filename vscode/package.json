@@ -55,6 +55,11 @@
         "category": "Billable"
       },
       {
+        "command": "claudeMultiAccount.signIn",
+        "title": "Sign in to an account again",
+        "category": "Billable"
+      },
+      {
         "command": "claudeMultiAccount.costReport",
         "title": "Cost report by account",
         "category": "Billable"

@@ -116,6 +116,26 @@ test('the latest status can be narrowed to one account', () => {
   assert.strictEqual(lib.latestStatus(p, ['/w/other']), null)
 })
 
+test('accounts signed in as the same Claude account are found, whatever the case of the email', () => {
+  const p = sandbox()
+  const signIn = (dir, email) => {
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, '.claude.json'), JSON.stringify({ oauthAccount: { emailAddress: email } }))
+  }
+  // ~/.claude keeps its sign-in in ~/.claude.json, beside the folder.
+  fs.writeFileSync(path.join(p.home, '.claude.json'), JSON.stringify({ oauthAccount: { emailAddress: 'work@co.test' } }))
+  signIn(path.join(p.home, '.claude-client'), 'me@home.test')
+  signIn(path.join(p.home, '.claude-mine'), 'Me@Home.test')
+  const accounts = [
+    { name: 'work', dir: path.join(p.home, '.claude') },
+    { name: 'client', dir: path.join(p.home, '.claude-client') },
+    { name: 'mine', dir: path.join(p.home, '.claude-mine') },
+    { name: 'new', dir: path.join(p.home, '.claude-new') },
+  ]
+  assert.deepStrictEqual(lib.sharedSignIns(p, accounts), [{ email: 'me@home.test', names: ['client', 'mine'] }])
+  assert.deepStrictEqual(lib.sharedSignIns(p, accounts.slice(0, 2)), [])
+})
+
 test('in a multi-root workspace the account, usage and open-chat warning all come from the first folder', () => {
   const p = sandbox()
   fs.mkdirSync(p.sessions, { recursive: true })
