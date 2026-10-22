@@ -205,6 +205,23 @@ function latestStatus(p, roots, account) {
   return best
 }
 
+// What the status bar shows: the account the folder is set to, so a switch shows at once, usage from the latest
+// session on that account, and a conversation still open on another account. Claude Code runs a window's
+// conversations in its first folder, so in a multi-root workspace all of it comes from that folder alone.
+function folderView(p, roots) {
+  if (roots.length === 0) return null
+  const folder = roots[0]
+  const accounts = readAccounts(p)
+  const latest = latestStatus(p, [folder])
+  const ruled = accountFor(folder, readRules(p))
+  const currentName = ruled ?? latest?.account.name ?? accounts[0].name
+  const current = accounts.find(a => a.name === currentName)
+  const status = latestStatus(p, [folder], currentName)
+  const email = status?.account.email ?? (current ? emailOf(current.dir, p.home) : NOT_SIGNED_IN)
+  const openOn = latest && latest.account.name !== currentName ? latest.account.name : null
+  return { folder, accounts, status, openOn, currentName, email }
+}
+
 function pruneSessions(p, maxAgeMs = 7 * 24 * 60 * 60 * 1000) {
   try {
     for (const f of fs.readdirSync(p.sessions)) {
@@ -541,6 +558,7 @@ module.exports = {
   accountsMissingPlugin,
   claudeBinary,
   latestStatus,
+  folderView,
   pruneSessions,
   sessionTokens,
   short,

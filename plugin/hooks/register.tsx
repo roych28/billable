@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import type { ClaudeMultiAccountAccount, ClaudeMultiAccountInfo, ClaudeMultiAccountUsage } from '../types'
 
@@ -10,6 +10,8 @@ const handoff = atom({ plugin: 'multi-account', key: 'handoff' } as const, null)
 const run = atom({ plugin: 'multi-account', key: 'run' } as const, null)
 
 const HANDOFF_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000
+// How often the folder's rule and the other accounts are read again: both change outside this session.
+const REFRESH_MS = 5_000
 const NOT_SIGNED_IN = 'not signed in'
 const LIMIT_NAMES: Record<string, string> = { five_hour: '5-hour limit', seven_day: 'Weekly limit' }
 
@@ -292,11 +294,48 @@ function statusText(i: ClaudeMultiAccountInfo, u: ClaudeMultiAccountUsage, next:
   return lines.join('\n')
 }
 
+// A running session keeps its account. After the folder is switched (from the VS Code status bar, /account or
+// another session) the line says where a new conversation runs, so it never reads as if nothing changed.
+function vscodeStatus(i: ClaudeMultiAccountInfo, next: string | null): string {
+  const line = `Claude account: ${i.current.name} (${i.current.email})`
+  return next && next !== i.current.name ? `${line}. New conversations in this folder run on ${next}.` : line
+}
+
+async function refresh($: EngineInterface): Promise<void> {
+  const i = await read($, info)
+  if (!i) return
+  const list = await accounts($)
+  const current = list.find(a => pathKey(a.dir) === pathKey(i.current.dir)) ?? i.current
+  const others = list.filter(a => pathKey(a.dir) !== pathKey(current.dir) && a.email !== NOT_SIGNED_IN)
+  await update($, info, () => ({ ...i, current, others }))
+  const ruled = accountFor(i.folder, await rules($))
+  await update($, nextAccount, () => ruled)
+}
+
+let timer: Timer | undefined
+// The status line as last set, so an unchanged one is not set again every few seconds.
+let shown: string | undefined
+
+async function refreshStatus($: EngineInterface): Promise<void> {
+  await refresh($)
+  const i = await read($, info)
+  if (!i || (await $.env.get('CLAUDE_CODE_ENTRYPOINT')) !== 'claude-vscode') return
+  const text = vscodeStatus(i, await read($, nextAccount))
+  if (text === shown) return
+  shown = text
+  $.ui.status(text)
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const loaded = await loadInfo($, e.cwd)
     await update($, info, () => loaded)
     await update($, nextAccount, () => null)
+    shown = undefined
+    timer?.cancel()
+    timer = $.clock.every(REFRESH_MS, () => {
+      refreshStatus($).catch(() => {})
+    })
 
     const now = await $.session.usage()
     await update($, usage, () => ({
@@ -324,6 +363,7 @@ export const register: Register = on => {
 
     if ((await $.env.get('CLAUDE_CODE_ENTRYPOINT')) === 'claude-vscode') {
       const text = `Claude account: ${loaded.current.name} (${loaded.current.email})`
+      shown = text
       $.ui.status(text)
       try {
         await $.session.append({ message: { type: 'system', content: [{ type: 'text', text }] } })

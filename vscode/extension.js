@@ -74,21 +74,8 @@ function activate(context) {
   item.command = 'claudeMultiAccount.switch'
   context.subscriptions.push(item)
 
-  // The status bar shows the account the folder is set to, so a switch shows at once. Usage comes from the
-  // latest session on that account; a conversation still open on another account is flagged.
   function view() {
-    const roots = folders()
-    if (roots.length === 0) return null
-    const folder = roots[0]
-    const accounts = lib.readAccounts(p)
-    const latest = lib.latestStatus(p, roots)
-    const ruled = lib.accountFor(folder, lib.readRules(p))
-    const currentName = ruled ?? latest?.account.name ?? accounts[0].name
-    const current = accounts.find(a => a.name === currentName)
-    const status = lib.latestStatus(p, roots, currentName)
-    const email = status?.account.email ?? (current ? lib.emailOf(current.dir, p.home) : lib.NOT_SIGNED_IN)
-    const openOn = latest && latest.account.name !== currentName ? latest.account.name : null
-    return { folder, accounts, status, openOn, currentName, email }
+    return lib.folderView(p, folders())
   }
 
   function tooltip(v) {

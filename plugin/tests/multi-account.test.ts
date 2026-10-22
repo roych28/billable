@@ -27,7 +27,7 @@ function world(
     return { text: e.text, context: e.context }
   })
   mock.env(on, { HOME, CLAUDE_CONFIG_DIR: `${HOME}/.claude-acme`, ...env })
-  mock.clock(on, { now: 1_000_000 })
+  const clock = mock.clock(on, { now: 1_000_000 })
   on('fs.read', ($, e) => {
     const text = files[e.path]
     return text === undefined ? { deny: `ENOENT ${e.path}` } : { value: text }
@@ -53,6 +53,7 @@ function world(
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('model.fork', () => ({ value: { isAnswered: false, reason: 'nothing-to-fork' } }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
+  return clock
 }
 
 function signedIn(): Record<string, string> {
@@ -118,6 +119,37 @@ test('inside VS Code the account is a status line, not a band', async ($, on) =>
   expect(await ui.find({ type: 'Text', text: 'the engine band' })).toBeDefined()
   expect(await ui.find({ key: 'switch-personal' })).toBeUndefined()
   await ui.unmount()
+})
+
+test('inside VS Code the account line follows a switch made outside the session, and new accounts that sign in', async ($, on) => {
+  const statuses: (string | undefined)[] = []
+  on('ui.status', ($, e) => {
+    statuses.push(e.text)
+    return { value: undefined }
+  })
+  const files = signedIn()
+  const clock = world(on, files, 's-9', [], { CLAUDE_CODE_ENTRYPOINT: 'claude-vscode' })
+  await start($)
+  expect(statuses).toEqual(['Claude account: acme (me@acme.test)'])
+
+  // The VS Code status bar pins the folder to personal, and globex signs in.
+  files[`${BASE}/folders`] = `${CWD}\tpersonal\n`
+  files[`${HOME}/.claude-globex/.claude.json`] = JSON.stringify({ oauthAccount: { emailAddress: 'me@globex.test' } })
+  await clock.advance(5_000)
+  expect(statuses.at(-1)).toBe('Claude account: acme (me@acme.test). New conversations in this folder run on personal.')
+  const shown = await $.command.run({ command: 'account', args: '' } as never)
+  expect(JSON.stringify(shown)).toContain('globex (me@globex.test)')
+  expect(JSON.stringify(shown)).toContain('runs on personal')
+
+  // Nothing changed: the line is not set again.
+  const count = statuses.length
+  await clock.advance(5_000)
+  expect(statuses.length).toBe(count)
+
+  // Back to acme: the line goes back to naming the account alone.
+  files[`${BASE}/folders`] = `${CWD}\tacme\n`
+  await clock.advance(5_000)
+  expect(statuses.at(-1)).toBe('Claude account: acme (me@acme.test)')
 })
 
 test('inside VS Code the session opens with one line naming its account', async ($, on) => {

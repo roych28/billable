@@ -4,6 +4,8 @@
 
 - **`Add account` signs in the new account, not the folder's.** The sign-in used to run `claude auth login` in a shell, where a `claude()` wrapper (the one the README suggests for the terminal) set the folder's account and signed that one in again. It now runs Claude Code's own binary directly, so neither the shell profile nor your PATH can change where it lands.
 - When the sign-in ends, Billable says which email the new account signed in as. If it is a different email than the one you entered, or the sign-in did not finish, it offers to sign in again.
+- **The account line in the Claude chat follows a switch.** It used to be set once when the conversation started. When the folder is switched from the status bar, `/account` or another session, it now says within seconds where new conversations in the folder run, and accounts that sign in later show up in `/account` (companion plugin 0.2.1).
+- **Multi-root workspaces.** The status bar took the account from the first folder but usage and the "chat on" warning from every folder, so it could name three accounts at once. Claude Code runs the window's conversations in the first folder, so all of it now comes from there.
 
 ## 0.6.1
 

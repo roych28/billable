@@ -116,6 +116,31 @@ test('the latest status can be narrowed to one account', () => {
   assert.strictEqual(lib.latestStatus(p, ['/w/other']), null)
 })
 
+test('in a multi-root workspace the account, usage and open-chat warning all come from the first folder', () => {
+  const p = sandbox()
+  fs.mkdirSync(p.sessions, { recursive: true })
+  fs.writeFileSync(p.accounts, 'acme\t~/.claude-acme\npersonal\t~/.claude-personal\n')
+  fs.writeFileSync(p.folders, '/w/app\tacme\n')
+  const row = (id, cwd, account, updatedAt) =>
+    fs.writeFileSync(
+      path.join(p.sessions, `${id}.json`),
+      JSON.stringify({ sessionId: id, cwd, account: { name: account, email: `${account}@x.test` }, usage: { limits: [] }, updatedAt }),
+    )
+  row('app', '/w/app/src', 'acme', 1)
+  // Newer, but in the second folder, where no chat of this window runs.
+  row('api', '/w/api', 'personal', 2)
+  const v = lib.folderView(p, ['/w/app', '/w/api'])
+  assert.strictEqual(v.folder, '/w/app')
+  assert.strictEqual(v.currentName, 'acme')
+  assert.strictEqual(v.status.sessionId, 'app')
+  assert.strictEqual(v.email, 'acme@x.test')
+  assert.strictEqual(v.openOn, null)
+  assert.strictEqual(lib.folderView(p, []), null)
+
+  row('app2', '/w/app', 'personal', 3)
+  assert.strictEqual(lib.folderView(p, ['/w/app', '/w/api']).openOn, 'personal', 'a chat in the first folder still on another account is flagged')
+})
+
 test('on Windows folder rules ignore case and slash direction', () => {
   const rules = [{ path: 'C:\\Work\\Acme', account: 'acme' }, { path: '*', account: 'personal' }]
   assert.strictEqual(lib.accountFor('c:\\work\\acme\\app', rules, 'win32'), 'acme')
