@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.2
+
+- **`Add account` signs in the new account, not the folder's.** The sign-in used to run `claude auth login` in a shell, where a `claude()` wrapper (the one the README suggests for the terminal) set the folder's account and signed that one in again. It now runs Claude Code's own binary directly, so neither the shell profile nor your PATH can change where it lands.
+- When the sign-in ends, Billable says which email the new account signed in as. If it is a different email than the one you entered, or the sign-in did not finish, it offers to sign in again.
+
 ## 0.6.1
 
 - **New accounts get the plugin.** `Add account` installs the companion Claude Code plugin into the new account before you sign in, so its first session already shows the account, cost and limits above the prompt and has `/account`. It installs from the same place your other accounts use, or from GitHub.

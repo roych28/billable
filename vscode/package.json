@@ -3,7 +3,7 @@
   "displayName": "Billable: Claude Code accounts and cost per client",
   "description": "Formerly Claude Multi-Account. Run each project on its own Claude account. See the account, tokens, cost and limits in the status bar, switch with one click, and stop idle Claude sessions that hold RAM.",
   "publisher": "roychemo",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "license": "MIT",
   "icon": "icon.png",
   "repository": {

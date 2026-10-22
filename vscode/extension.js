@@ -42,11 +42,15 @@ function run(file, args, env) {
   )
 }
 
+function claudePath() {
+  return lib.claudeBinary(vscode.extensions.getExtension('anthropic.claude-code')?.extensionPath)
+}
+
 // Installs this extension's Claude Code plugin (the account above the prompt, /account) into one account.
 async function installPlugin(p, dir) {
   const env = { ...process.env, CLAUDE_CONFIG_DIR: dir }
   if (lib.pathKey(dir) === lib.pathKey(path.join(p.home, '.claude'))) delete env.CLAUDE_CONFIG_DIR
-  const bin = lib.claudeBinary(vscode.extensions.getExtension('anthropic.claude-code')?.extensionPath)
+  const bin = claudePath()
   const [addMarketplace, install] = lib.pluginInstallSteps(lib.pluginSource(lib.readAccounts(p)))
   // Fails when the marketplace is already there; the install below is what has to succeed.
   await run(bin, addMarketplace, env).catch(() => {})
@@ -333,16 +337,42 @@ function activate(context) {
         vscode.window.showWarningMessage(`Billable could not add its plugin to ${name}: ${err.message}`)
       }),
     )
-    const terminal = vscode.window.createTerminal({
-      name: `Claude login: ${name}`,
-      env: { CLAUDE_CONFIG_DIR: lib.expand(dir, p.home) },
-    })
-    terminal.show()
-    terminal.sendText(email ? `claude auth login --email ${email}` : 'claude auth login')
+    signIn(name, lib.expand(dir, p.home), email)
     refresh()
     vscode.window.showInformationMessage(
       `Sign in to ${name} in the browser that opens. If the browser is signed in to another Claude account, sign out there first. Then switch a folder to ${name} from the status bar.`,
     )
+  }
+
+  // Runs claude itself, not a shell: a claude() wrapper in the shell profile (the one the README suggests)
+  // would replace CLAUDE_CONFIG_DIR with the folder's account and sign that account in again.
+  function signIn(name, dir, email) {
+    const terminal = vscode.window.createTerminal({
+      name: `Claude login: ${name}`,
+      shellPath: claudePath(),
+      shellArgs: email ? ['auth', 'login', '--email', email] : ['auth', 'login'],
+      env: { CLAUDE_CONFIG_DIR: dir },
+    })
+    const closed = vscode.window.onDidCloseTerminal(async t => {
+      if (t !== terminal) return
+      closed.dispose()
+      refresh()
+      const signedIn = lib.emailOf(dir, p.home)
+      const wrong = email && signedIn !== lib.NOT_SIGNED_IN && signedIn.toLowerCase() !== email.toLowerCase()
+      if (signedIn !== lib.NOT_SIGNED_IN && !wrong) {
+        return vscode.window.showInformationMessage(`${name} is signed in as ${signedIn}.`)
+      }
+      const again = 'Sign in again'
+      const answer = await vscode.window.showWarningMessage(
+        wrong
+          ? `${name} signed in as ${signedIn}, not ${email}. Sign out of Claude in the browser, then sign in again.`
+          : `${name} is not signed in yet.`,
+        again,
+      )
+      if (answer === again) signIn(name, dir, email)
+    })
+    context.subscriptions.push(closed)
+    terminal.show()
   }
 
   async function setupLauncher() {

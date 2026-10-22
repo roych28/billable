@@ -148,16 +148,41 @@ function answers(fn, values) {
   return { seen, restore: () => { vscode.window[fn] = real } }
 }
 
-// Records the login terminal instead of opening one.
+// Records the login terminal instead of opening one; close(t) stands in for the sign-in ending.
 function fakeTerminal() {
-  const real = vscode.window.createTerminal
+  const real = { create: vscode.window.createTerminal, onClose: vscode.window.onDidCloseTerminal }
   const made = []
+  const listeners = new Set()
   vscode.window.createTerminal = options => {
     const t = { options, sent: [], show() {}, dispose() {}, sendText(text) { this.sent.push(text) } }
     made.push(t)
     return t
   }
-  return { made, restore: () => { vscode.window.createTerminal = real } }
+  vscode.window.onDidCloseTerminal = fn => {
+    listeners.add(fn)
+    return { dispose: () => listeners.delete(fn) }
+  }
+  const close = t => Promise.all([...listeners].map(fn => fn(t)))
+  return {
+    made,
+    close,
+    listening: () => listeners.size,
+    restore: () => {
+      vscode.window.createTerminal = real.create
+      vscode.window.onDidCloseTerminal = real.onClose
+    },
+  }
+}
+
+const signedInAs = (dir, email) => fs.writeFileSync(path.join(dir, '.claude.json'), JSON.stringify({ oauthAccount: { emailAddress: email } }))
+
+// claude itself, never a shell: a claude() wrapper in the shell profile would sign in the folder's account instead.
+function assertLogin(t, dir, args) {
+  const ext = vscode.extensions.getExtension('anthropic.claude-code')
+  assert.strictEqual(t.options.shellPath, require('../../lib').claudeBinary(ext?.extensionPath))
+  assert.deepStrictEqual(t.options.shellArgs, args)
+  assert.strictEqual(t.options.env.CLAUDE_CONFIG_DIR, dir)
+  assert.deepStrictEqual(t.sent, [], 'nothing is typed into a shell')
 }
 
 check('add account creates its folder, records it and signs in with claude auth login and the email', async () => {
@@ -176,8 +201,7 @@ check('add account creates its folder, records it and signs in with claude auth 
     assert.ok(accounts.includes(`${name}\t~/.claude-${name}`), accounts)
     assert.ok(fs.statSync(dir).isDirectory(), 'the config folder was not created')
     assert.strictEqual(term.made.length, 1)
-    assert.strictEqual(term.made[0].options.env.CLAUDE_CONFIG_DIR, dir)
-    assert.deepStrictEqual(term.made[0].sent, ['claude auth login --email me@client.test'])
+    assertLogin(term.made[0], dir, ['auth', 'login', '--email', 'me@client.test'])
     const [nameRule, emailRule] = input.seen.map(a => a[0].validateInput)
     assert.strictEqual(nameRule('Bad Name'), 'Use lowercase letters, digits and dashes')
     assert.match(nameRule('auto'), /reserved/)
@@ -203,7 +227,7 @@ check('add account without an email runs claude auth login, and cancelling the e
     let input = answers('showInputBox', [name, ''])
     await vscode.commands.executeCommand('claudeMultiAccount.addAccount')
     input.restore()
-    assert.deepStrictEqual(term.made[0].sent, ['claude auth login'])
+    assertLogin(term.made[0], dir, ['auth', 'login'])
 
     const other = `${name}x`
     input = answers('showInputBox', [other, undefined])
@@ -212,6 +236,53 @@ check('add account without an email runs claude auth login, and cancelling the e
     assert.ok(!fs.readFileSync(path.join(base, 'accounts'), 'utf8').includes(other), 'a cancelled add must not record the account')
     assert.strictEqual(term.made.length, 1)
   } finally {
+    info.restore()
+    term.restore()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+check('when the sign-in ends, add account says which email the new account signed in as, and offers to try again', async () => {
+  const name = `cmatest${Date.now().toString(36)}s`
+  const dir = path.join(os.homedir(), `.claude-${name}`)
+  const input = answers('showInputBox', [name, 'Me@Client.test'])
+  const info = answer('showInformationMessage', undefined)
+  const term = fakeTerminal()
+  try {
+    await vscode.commands.executeCommand('claudeMultiAccount.addAccount')
+    assert.strictEqual(info.seen.length, 1)
+
+    // The browser was signed in to another account.
+    signedInAs(dir, 'someone@else.test')
+    let warn = answer('showWarningMessage', 'Sign in again')
+    await term.close(term.made[0])
+    warn.restore()
+    assert.match(warn.seen[0][0], new RegExp(`${name} signed in as someone@else\\.test, not Me@Client\\.test`))
+    assert.strictEqual(term.made.length, 2, '"Sign in again" opens the sign-in once more')
+    assertLogin(term.made[1], dir, ['auth', 'login', '--email', 'Me@Client.test'])
+
+    // Closed before finishing.
+    fs.rmSync(path.join(dir, '.claude.json'))
+    warn = answer('showWarningMessage', undefined)
+    await term.close(term.made[1])
+    warn.restore()
+    assert.strictEqual(warn.seen[0][0], `${name} is not signed in yet.`)
+    assert.strictEqual(term.made.length, 2)
+    assert.strictEqual(term.listening(), 0, 'every listener is gone once its sign-in ended')
+
+    // Signed in as asked; the email compares without case.
+    const again = answers('showInputBox', [`${name}k`, 'me@client.test'])
+    await vscode.commands.executeCommand('claudeMultiAccount.addAccount')
+    again.restore()
+    const okDir = path.join(os.homedir(), `.claude-${name}k`)
+    signedInAs(okDir, 'ME@client.test')
+    await term.close(term.made[0])
+    assert.strictEqual(term.listening(), 1, 'closing another terminal leaves this sign-in waiting')
+    await term.close(term.made[2])
+    assert.strictEqual(info.seen.at(-1)[0], `${name}k is signed in as ME@client.test.`)
+    fs.rmSync(okDir, { recursive: true, force: true })
+  } finally {
+    input.restore()
     info.restore()
     term.restore()
     fs.rmSync(dir, { recursive: true, force: true })
