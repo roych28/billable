@@ -182,6 +182,7 @@ function assertLogin(t, dir, args) {
   assert.strictEqual(t.options.shellPath, require('../../lib').claudeBinary(ext?.extensionPath))
   assert.deepStrictEqual(t.options.shellArgs, args)
   assert.strictEqual(t.options.env.CLAUDE_CONFIG_DIR, dir)
+  assert.strictEqual(t.options.env.BROWSER, '/usr/bin/true', 'the sign-in prints a link and waits for a code')
   assert.deepStrictEqual(t.sent, [], 'nothing is typed into a shell')
 }
 

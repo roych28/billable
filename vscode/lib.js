@@ -116,6 +116,28 @@ function addAccount(p, name, dir) {
   fs.mkdirSync(expand(dir, p.home), { recursive: true })
 }
 
+// Drops the account and every folder rule that runs on it; its folder is left for the caller.
+function removeAccount(p, name) {
+  if (name === 'default') throw new Error('The default account cannot be removed')
+  const rows = readRows(p.accounts)
+  if (!rows.some(r => r[0] === name)) throw new Error(`There is no account named ${name}`)
+  const keep = file => {
+    let lines = []
+    try {
+      lines = fs.readFileSync(file, 'utf8').split('\n').filter(l => l.trim())
+    } catch {}
+    return lines.filter(l => l.trim().startsWith('#') || (l.split('\t')[1] || '').trim() !== name)
+  }
+  fs.writeFileSync(p.accounts, keep(p.accounts).filter(l => (l.split('\t')[0] || '').trim() !== name).join('\n') + '\n')
+  if (fs.existsSync(p.folders)) fs.writeFileSync(p.folders, keep(p.folders).join('\n') + '\n')
+}
+
+// claude opens the sign-in page with $BROWSER when it is set; a command that does nothing leaves
+// the link and the code prompt in the terminal. Not on Windows, where no such command is assumed.
+function noBrowserEnv(platform = process.platform) {
+  return platform === 'win32' ? {} : { BROWSER: '/usr/bin/true' }
+}
+
 const PLUGIN = 'multi-account'
 const PUBLIC_MARKETPLACE = { name: 'claude-multi-account', arg: 'roych28/claude-multi-account' }
 
@@ -564,6 +586,8 @@ module.exports = {
   emailOf,
   pin,
   addAccount,
+  removeAccount,
+  noBrowserEnv,
   PLUGIN,
   PUBLIC_MARKETPLACE,
   pluginState,

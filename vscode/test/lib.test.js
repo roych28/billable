@@ -77,6 +77,24 @@ test('the first added account also records the existing default one', () => {
   assert.throws(() => lib.addAccount(p, 'acme', '~/.claude-acme'), /already exists/)
 })
 
+test('removing an account drops it and the folder rules that run on it', () => {
+  const p = sandbox()
+  lib.addAccount(p, 'acme', '~/.claude-acme')
+  lib.addAccount(p, 'globex', '~/.claude-globex')
+  fs.writeFileSync(p.folders, `# rules\n~/code/app\tacme\n~/code/other\tglobex\n`)
+  lib.removeAccount(p, 'acme')
+  assert.deepStrictEqual(lib.readAccounts(p).map(a => a.name), ['default', 'globex'])
+  assert.deepStrictEqual(lib.readRules(p).map(r => r.account), ['globex'])
+  assert.match(fs.readFileSync(p.folders, 'utf8'), /^# rules/)
+  assert.throws(() => lib.removeAccount(p, 'acme'), /no account named/)
+  assert.throws(() => lib.removeAccount(p, 'default'), /cannot be removed/)
+})
+
+test('the sign-in opens no browser, except on Windows', () => {
+  assert.deepStrictEqual(lib.noBrowserEnv('darwin'), { BROWSER: '/usr/bin/true' })
+  assert.deepStrictEqual(lib.noBrowserEnv('win32'), {})
+})
+
 test('the launcher picks the same account as the extension', () => {
   const p = sandbox()
   fs.mkdirSync(p.base, { recursive: true })

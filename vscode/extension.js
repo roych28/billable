@@ -321,7 +321,7 @@ function activate(context) {
     if (!account) return
     signIn(account.name, account.dir)
     vscode.window.showInformationMessage(
-      `Sign in to ${account.name} in the browser that opens. If the browser is signed in to another Claude account, sign out there first.`,
+      `Sign in to ${account.name}: open the link in the terminal in a browser signed in to that account (or a private window), then paste the code back into the terminal.`,
     )
   }
 
@@ -374,8 +374,40 @@ function activate(context) {
     signIn(name, lib.expand(dir, p.home), email)
     refresh()
     vscode.window.showInformationMessage(
-      `Sign in to ${name} in the browser that opens. If the browser is signed in to another Claude account, sign out there first. Then switch a folder to ${name} from the status bar.`,
+      `Sign in to ${name}: open the link in the terminal in a browser signed in to that account (or a private window), then paste the code back into the terminal. Then switch a folder to ${name} from the status bar.`,
     )
+  }
+
+  async function removeAccount() {
+    const accounts = lib.readAccounts(p).filter(a => a.name !== 'default')
+    if (!accounts.length) return vscode.window.showInformationMessage('There are no accounts to remove besides the default one.')
+    const pick = await vscode.window.showQuickPick(
+      accounts.map(a => ({ label: a.name, description: `${lib.emailOf(a.dir, p.home)}  ${a.dir}`, account: a })),
+      { title: 'Remove which account?' },
+    )
+    if (!pick) return
+    const { name, dir } = pick.account
+    const remove = 'Remove'
+    const answer = await vscode.window.showWarningMessage(
+      `Remove ${name}? It is signed out, folders that run on it go back to the default account, and ${dir} moves to the trash.`,
+      { modal: true },
+      remove,
+    )
+    if (answer !== remove) return
+    if (lib.emailOf(dir, p.home) !== lib.NOT_SIGNED_IN) {
+      // Signs out with the account's own config dir, so its keychain entry goes too.
+      await new Promise(resolve =>
+        execFile(login.claude(), ['auth', 'logout'], { env: { ...process.env, CLAUDE_CONFIG_DIR: dir } }, () => resolve()),
+      )
+    }
+    try {
+      lib.removeAccount(p, name)
+      await vscode.workspace.fs.delete(vscode.Uri.file(dir), { recursive: true, useTrash: true })
+    } catch (err) {
+      vscode.window.showErrorMessage(`Could not remove ${name}: ${err.message}`)
+    }
+    refresh()
+    vscode.window.showInformationMessage(`${name} was removed.`)
   }
 
   // Runs claude itself, not a shell: a claude() wrapper in the shell profile (the one the README suggests)
@@ -385,8 +417,13 @@ function activate(context) {
       name: `Claude login: ${name}`,
       shellPath: login.claude(),
       shellArgs: email ? ['auth', 'login', '--email', email] : ['auth', 'login'],
-      // ~/.claude is the account with no CLAUDE_CONFIG_DIR: naming it would make claude look for another sign-in.
-      env: { CLAUDE_CONFIG_DIR: lib.pathKey(dir) === lib.pathKey(path.join(p.home, '.claude')) ? null : dir },
+      env: {
+        // ~/.claude is the account with no CLAUDE_CONFIG_DIR: naming it would make claude look for another sign-in.
+        CLAUDE_CONFIG_DIR: lib.pathKey(dir) === lib.pathKey(path.join(p.home, '.claude')) ? null : dir,
+        // No browser: the default one is usually signed in to another Claude account and authorizes that one.
+        // claude then prints the sign-in link and waits for the code, so the user picks the browser.
+        ...lib.noBrowserEnv(),
+      },
     })
     const closed = vscode.window.onDidCloseTerminal(async t => {
       if (t !== terminal) return
@@ -400,7 +437,7 @@ function activate(context) {
       const again = 'Sign in again'
       const answer = await vscode.window.showWarningMessage(
         wrong
-          ? `${name} signed in as ${signedIn}, not ${email}. Sign out of Claude in the browser, then sign in again.`
+          ? `${name} signed in as ${signedIn}, not ${email}. Open the link in a private window, or one signed in as ${email}, and sign in again.`
           : `${name} is not signed in yet.`,
         again,
       )
@@ -500,6 +537,7 @@ function activate(context) {
     vscode.commands.registerCommand('claudeMultiAccount.switchTo', switchTo),
     vscode.commands.registerCommand('claudeMultiAccount.addAccount', addAccount),
     vscode.commands.registerCommand('claudeMultiAccount.signIn', signInAgain),
+    vscode.commands.registerCommand('claudeMultiAccount.removeAccount', removeAccount),
     vscode.commands.registerCommand('claudeMultiAccount.setupLauncher', setupLauncher),
     vscode.commands.registerCommand('claudeMultiAccount.stopIdleSessions', stopIdleSessions),
     vscode.commands.registerCommand('claudeMultiAccount.switch', async () => {
@@ -514,6 +552,7 @@ function activate(context) {
           .map(a => ({ label: `$(account) ${a.name}`, description: lib.emailOf(a.dir, p.home), name: a.name })),
         ...(inherit ? [{ label: '$(discard) Use default', description: `Drop this folder's own rule: it runs on ${inherit}`, name: 'auto' }] : []),
         { label: '$(add) Add account', description: 'Sign in to another Claude account', name: '+add' },
+        ...(v.accounts.length > 1 ? [{ label: '$(trash) Remove account', description: 'Sign out an account and drop it', name: '+remove' }] : []),
       ]
       const pick = await vscode.window.showQuickPick(picks, {
         title: `${path.basename(v.folder)} runs on ${v.currentName}`,
@@ -521,6 +560,7 @@ function activate(context) {
       })
       if (!pick) return
       if (pick.name === '+add') return addAccount()
+      if (pick.name === '+remove') return removeAccount()
       await switchTo(pick.name)
     }),
   )

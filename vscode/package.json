@@ -60,6 +60,11 @@
         "category": "Billable"
       },
       {
+        "command": "claudeMultiAccount.removeAccount",
+        "title": "Remove account",
+        "category": "Billable"
+      },
+      {
         "command": "claudeMultiAccount.costReport",
         "title": "Cost report by account",
         "category": "Billable"
