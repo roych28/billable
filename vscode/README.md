@@ -18,6 +18,7 @@ Freelancers and consultants often hold a Claude account per client, plus a perso
 - **Pick up where you stopped.** After a switch, start a new conversation right where you are: it receives the last request, the last answer and the path of the previous transcript, so the work continues on the new account without repeating yourself.
 - **Real token counts.** Tokens are read from the session transcript: input, output, cache reads and cache writes, for the whole session, resumed sessions included.
 - **Cost report by account.** What each account, and each folder under it, cost in a month. One account per client means one line per client on your invoice. Open it from the hover or with `Billable: Cost report by account`.
+- **Share memory between accounts, or keep them apart.** Each account is its own config directory, so by default it has its own conversations, memory and settings. `Share conversations, memory and settings with the default account` links an account to the default one: conversations and memory, or everything but the sign-in. Each account keeps its own sign-in, plan and limits.
 - **Idle sessions.** Every Claude Code session you leave open keeps a few hundred MB of RAM. The hover shows how many sessions are running, how many are idle, and the RAM they hold together. `Stop idle sessions` stops the ones you pick and gives you the command to resume each one, and a setting can stop long-idle sessions on its own.
 
 ## Idle sessions
@@ -36,6 +37,16 @@ A session is stopped only when all of these hold, checked again right before the
 - It uses under 2.5% CPU over a 5-second sample.
 
 It covers the accounts Billable knows (the `accounts` file, or `~/.claude`), on macOS and Linux.
+
+## Sharing between accounts
+
+Claude Code keeps conversations, memory and settings in the account's config directory, so switching a folder to another account starts it without the memory it built up. `Billable: Share conversations, memory and settings with the default account` (or `Change` on the sharing line of the hover) offers three levels per account:
+
+- **Nothing** (the default): the account has its own of everything. Best for a client you keep apart, since what an account shares goes into the context of its conversations.
+- **Conversations and memory:** `projects` (transcripts and each project's `memory`), `file-history`, `todos`, `history.jsonl` and your `CLAUDE.md`.
+- **Everything but the sign-in:** also `settings.json`, `keybindings.json`, `plugins`, `commands`, `agents`, `skills` and `output-styles`.
+
+Each shared item becomes a link to the default account's copy. What the account had is merged in where the default account lacks it, and the rest is moved to a `billable-backup-<time>` folder in the account's directory. `.claude.json` and the keychain entry are never shared. Sharing less copies the settings back, and leaves the conversations with the default account. The choice is kept in `~/.claude-multi-account/sync` and applied again when VS Code starts, in case Claude Code replaced a link with a file of its own.
 
 ## Pro
 
@@ -61,6 +72,7 @@ Every Claude account lives in its own config directory, which Claude Code reads 
 
 - `accounts`: one account per line, `name<TAB>config dir`
 - `folders`: one rule per line, `folder<TAB>account`. The longest matching folder wins, and a `*` line is the default.
+- `sync`: one line per account that shares with the default one, `account<TAB>memory|all`.
 
 The launcher reads these files and starts Claude Code on the right account. The companion plugin reports the account, cost and limits of each session, records each session's cost in `~/.claude-multi-account/ledger`, and writes the handoff note the next session reads. The cost is Claude Code's own figure at API prices; on a Pro or Max plan it measures the work done, not what the plan charged.
 

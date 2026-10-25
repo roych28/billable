@@ -75,6 +75,11 @@
         "category": "Billable"
       },
       {
+        "command": "claudeMultiAccount.share",
+        "title": "Share conversations, memory and settings with the default account",
+        "category": "Billable"
+      },
+      {
         "command": "claudeMultiAccount.setupLauncher",
         "title": "Start Claude Code tabs on the folder's account",
         "category": "Billable"

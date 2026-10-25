@@ -89,6 +89,8 @@ function activate(context) {
         'claudeMultiAccount.signIn',
         'claudeMultiAccount.costReport',
         'claudeMultiAccount.stopIdleSessions',
+        'claudeMultiAccount.share',
+        'claudeMultiAccount.setupLauncher',
         'claude-vscode.newConversation',
       ],
     }
@@ -104,6 +106,17 @@ function activate(context) {
     buttons.push(link('$(graph) Cost report', 'claudeMultiAccount.costReport', []))
     md.appendMarkdown(buttons.join(' &nbsp;&nbsp; ') + '\n\n')
     for (const s of lib.sharedSignIns(p, v.accounts)) md.appendMarkdown(`${sharedText(s)}\n\n`)
+    const src = lib.shareSource(v.accounts)
+    if (launcherMissing() && v.currentName !== src.name) {
+      md.appendMarkdown(
+        `$(warning) Claude Code tabs do not start through the Billable launcher, so they run on ${src.name}. ${link('Set up', 'claudeMultiAccount.setupLauncher', [])}\n\n`,
+      )
+    }
+    if (v.accounts.length > 1 && v.currentName !== src.name) {
+      const level = lib.shareLevel(p, v.currentName)
+      const what = level === 'none' ? `Shares nothing with ${src.name}` : `Shares ${SHARE_LABELS[level].toLowerCase()} with ${src.name}`
+      md.appendMarkdown(`$(sync) ${what} &nbsp; ${link('Change', 'claudeMultiAccount.share', [v.currentName])}\n\n`)
+    }
     if (v.openOn) {
       md.appendMarkdown(
         `$(warning) The open conversation still runs on **${v.openOn}**. ${link('Start a new conversation', 'claude-vscode.newConversation', [])} to move it to **${v.currentName}**.\n\n`,
@@ -325,12 +338,33 @@ function activate(context) {
     )
   }
 
+  function launcherPath() {
+    return path.join(p.bin, lib.launcherFiles().wrapper)
+  }
+
+  // Without the launcher, Claude Code tabs start on the default account whatever the folder is set to.
+  function launcherMissing() {
+    return (
+      vscode.extensions.getExtension('anthropic.claude-code') !== undefined &&
+      vscode.workspace.getConfiguration('claudeCode').get('claudeProcessWrapper') !== launcherPath()
+    )
+  }
+
   async function switchTo(name) {
     const folder = folders()[0]
     if (!folder) return
     lib.pin(p, folder, name)
     refresh()
     const next = lib.accountFor(folder, lib.readRules(p)) ?? 'the default account'
+    if (launcherMissing()) {
+      const setUp = 'Set up'
+      const answer = await vscode.window.showWarningMessage(
+        `${path.basename(folder)} is set to ${next}, but Claude Code tabs do not start through the Billable launcher yet, so they still run on the default account.`,
+        setUp,
+      )
+      if (answer === setUp) await setupLauncher()
+      return
+    }
     const start = 'Start new conversation'
     const answer = await vscode.window.showInformationMessage(
       `${path.basename(folder)} now runs on ${next}. A new conversation picks up where the last one stopped.`,
@@ -454,7 +488,7 @@ function activate(context) {
       )
     }
     const config = vscode.workspace.getConfiguration('claudeCode')
-    const launcher = path.join(p.bin, lib.launcherFiles().wrapper)
+    const launcher = launcherPath()
     const existing = config.get('claudeProcessWrapper')
     if (existing && existing !== launcher) {
       const replace = 'Replace it'
@@ -467,6 +501,67 @@ function activate(context) {
     }
     await config.update('claudeProcessWrapper', launcher, vscode.ConfigurationTarget.Global)
     vscode.window.showInformationMessage('Claude Code tabs now start on the account each folder is set to.')
+  }
+
+  function source() {
+    return lib.shareSource(lib.readAccounts(p))
+  }
+
+  const SHARE_LABELS = {
+    none: 'Nothing',
+    memory: 'Conversations and memory',
+    all: 'Everything but the sign-in',
+  }
+
+  function shareSummary(r, srcName) {
+    const parts = []
+    if (r.backup) parts.push(`What ${r.name} had and ${srcName} already has is in ${r.backup}.`)
+    if (r.errors.length) parts.push(`Not shared: ${r.errors.join('; ')}.`)
+    return parts.join(' ')
+  }
+
+  async function share(name) {
+    const accounts = lib.readAccounts(p)
+    const src = lib.shareSource(accounts)
+    const others = accounts.filter(a => a.name !== src.name)
+    if (!others.length) return vscode.window.showInformationMessage('Add another account first: it can then share with the default one.')
+    const current = view()?.currentName
+    const pickName =
+      name ??
+      (others.length === 1
+        ? others[0].name
+        : (
+            await vscode.window.showQuickPick(
+              others
+                .sort((a, b) => (b.name === current) - (a.name === current))
+                .map(a => ({ label: a.name, description: SHARE_LABELS[lib.shareLevel(p, a.name)], name: a.name })),
+              { title: `Which account shares with ${src.name}?` },
+            )
+          )?.name)
+    const account = others.find(a => a.name === pickName)
+    if (!account) return
+    const level = lib.shareLevel(p, account.name)
+    const pick = await vscode.window.showQuickPick(
+      [
+        { label: SHARE_LABELS.none, description: 'Its own conversations, memory and settings. Best for a client you keep apart', level: 'none' },
+        { label: SHARE_LABELS.memory, description: `The conversations, memory, prompt history and CLAUDE.md of ${src.name}`, level: 'memory' },
+        { label: SHARE_LABELS.all, description: 'Also settings, plugins, commands, agents and skills', level: 'all' },
+      ].map(i => (i.level === level ? { ...i, label: `$(check) ${i.label}` } : i)),
+      {
+        title: `What does ${account.name} share with ${src.name}?`,
+        placeHolder: 'Each account keeps its own sign-in, plan and limits. What it shares goes into the context of its conversations',
+      },
+    )
+    if (!pick || pick.level === level) return
+    const r = { name: account.name, ...lib.applyShare(account.dir, src.dir, pick.level) }
+    lib.writeShare(p, account.name, pick.level)
+    refresh()
+    const what =
+      pick.level === 'none'
+        ? `${account.name} no longer shares with ${src.name}. It keeps a copy of the settings; the conversations stay with ${src.name}.`
+        : `${account.name} now shares ${SHARE_LABELS[pick.level].toLowerCase()} with ${src.name}. New conversations on ${account.name} see it; open ones pick it up once restarted.`
+    const show = r.errors.length ? vscode.window.showWarningMessage : vscode.window.showInformationMessage
+    show(`${what} ${shareSummary(r, src.name)}`.trim())
   }
 
   async function askForPro(feature) {
@@ -540,6 +635,7 @@ function activate(context) {
     vscode.commands.registerCommand('claudeMultiAccount.removeAccount', removeAccount),
     vscode.commands.registerCommand('claudeMultiAccount.setupLauncher', setupLauncher),
     vscode.commands.registerCommand('claudeMultiAccount.stopIdleSessions', stopIdleSessions),
+    vscode.commands.registerCommand('claudeMultiAccount.share', share),
     vscode.commands.registerCommand('claudeMultiAccount.switch', async () => {
       const v = view()
       if (!v) return
@@ -586,6 +682,17 @@ function activate(context) {
   context.subscriptions.push({ dispose: () => clearInterval(idleTimer) })
   context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(refresh))
   refresh()
+
+  // Shared items Claude Code replaced with a file of its own, or that the default account has gained, are linked again.
+  try {
+    const src = source()
+    for (const r of lib.applyShares(p)) {
+      const summary = shareSummary(r, src.name)
+      if (summary) vscode.window.showWarningMessage(`Billable, sharing ${r.name} with ${src.name}: ${summary}`)
+    }
+  } catch (err) {
+    vscode.window.showWarningMessage(`Billable could not check what accounts share: ${err.message}`)
+  }
 
   // Accounts added before the plugin was installed with them, or by hand, get it now, one after another.
   const healed = (async () => {

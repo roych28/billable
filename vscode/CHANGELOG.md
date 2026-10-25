@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **Share memory between accounts, or keep them apart.** New command `Billable: Share conversations, memory and settings with the default account`, and a sharing line in the hover. Per account: nothing (the default), conversations and memory, or everything but the sign-in. Shared items become links to the default account's copy; what the account had is merged in, and anything that clashes is kept in a backup folder. Sign-ins, plans and limits stay separate.
+- **A switch no longer claims to work without the launcher.** When Claude Code tabs do not start through the Billable launcher, `Switch` used to say the folder "now runs on" the new account while new tabs kept running on the default one. It now says so and offers `Set up`, and the hover warns too.
+- `Sign in with a code`: the sign-in prints the link and waits for the code instead of opening the default browser, which is usually signed in to another Claude account. New command `Billable: Remove account`.
+
 ## 0.6.2
 
 - **`Add account` signs in the new account, not the folder's.** The sign-in used to run `claude auth login` in a shell, where a `claude()` wrapper (the one the README suggests for the terminal) set the folder's account and signed that one in again. It now runs Claude Code's own binary directly, so neither the shell profile nor your PATH can change where it lands.

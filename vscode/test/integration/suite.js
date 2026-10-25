@@ -32,7 +32,7 @@ check('the extension activates and registers every command', async () => {
   await api.pluginHealed()
   assert.deepStrictEqual(pluginInstalls, [])
   const all = await vscode.commands.getCommands(true)
-  for (const c of ['switch', 'switchTo', 'addAccount', 'signIn', 'setupLauncher', 'refresh', 'costReport', 'enterLicense', 'stopIdleSessions']) {
+  for (const c of ['switch', 'switchTo', 'addAccount', 'signIn', 'setupLauncher', 'refresh', 'costReport', 'enterLicense', 'stopIdleSessions', 'share']) {
     assert.ok(all.includes(`claudeMultiAccount.${c}`), `missing claudeMultiAccount.${c}`)
   }
 })
@@ -547,6 +547,38 @@ check('two accounts on one Claude account are flagged once, and "Sign in again" 
     term.restore()
     const kept = fs.readFileSync(path.join(base, 'accounts'), 'utf8').split('\n').filter(l => !l.startsWith('shared'))
     fs.writeFileSync(path.join(base, 'accounts'), kept.join('\n'))
+  }
+})
+
+check('an account shares conversations and memory with the default one, then stops sharing', async () => {
+  const own = path.join(tmp, 'claude-acme', 'projects')
+  const source = path.join(tmp, 'claude-personal', 'projects')
+  let items
+  const pick = answer('showQuickPick', list => { items = list; return list.find(i => i.level === 'memory') })
+  const info = answer('showInformationMessage', undefined)
+  try {
+    await vscode.commands.executeCommand('claudeMultiAccount.share', 'acme')
+    assert.deepStrictEqual(items.map(i => i.level), ['none', 'memory', 'all'])
+    assert.ok(items[0].label.startsWith('$(check)'), items[0].label)
+    assert.ok(fs.lstatSync(own).isSymbolicLink())
+    assert.strictEqual(fs.realpathSync(own), fs.realpathSync(source))
+    // The acme transcript of the earlier checks moved into the shared folder.
+    assert.ok(fs.existsSync(path.join(source, 'x', 's-1.jsonl')))
+    assert.ok(fs.readFileSync(path.join(base, 'sync'), 'utf8').includes('acme\tmemory'))
+    assert.ok(info.seen[0][0].includes('acme now shares conversations and memory with personal'), info.seen[0][0])
+  } finally {
+    pick.restore()
+    info.restore()
+  }
+  const off = answer('showQuickPick', list => list.find(i => i.level === 'none'))
+  const info2 = answer('showInformationMessage', undefined)
+  try {
+    await vscode.commands.executeCommand('claudeMultiAccount.share', 'acme')
+    assert.ok(!fs.existsSync(own))
+    assert.strictEqual(fs.readFileSync(path.join(base, 'sync'), 'utf8'), '')
+  } finally {
+    off.restore()
+    info2.restore()
   }
 })
 

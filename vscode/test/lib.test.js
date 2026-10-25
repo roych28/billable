@@ -429,3 +429,93 @@ test('claude comes from the Claude Code extension when it ships one, else from P
   assert.strictEqual(lib.claudeBinary(ext, 'darwin'), path.join(ext, 'resources', 'native-binary', 'claude'))
   assert.strictEqual(lib.claudeBinary(ext, 'win32'), path.join(ext, 'resources', 'native-binary', 'claude.exe'))
 })
+
+function shareSandbox() {
+  const p = sandbox()
+  const source = path.join(p.home, '.claude')
+  const account = path.join(p.home, '.claude-acme')
+  fs.mkdirSync(path.join(source, 'projects', '-w-app', 'memory'), { recursive: true })
+  fs.writeFileSync(path.join(source, 'projects', '-w-app', 'memory', 'MEMORY.md'), 'source memory')
+  fs.writeFileSync(path.join(source, 'settings.json'), '{"theme":"dark"}')
+  fs.writeFileSync(path.join(source, 'CLAUDE.md'), 'mine')
+  fs.mkdirSync(account, { recursive: true })
+  return { p, source, account }
+}
+
+test('sharing memory links the conversations to the default account and merges what the account had', () => {
+  const { source, account } = shareSandbox()
+  fs.mkdirSync(path.join(account, 'projects', '-w-app'), { recursive: true })
+  fs.writeFileSync(path.join(account, 'projects', '-w-app', 's1.jsonl'), 'acme session')
+  fs.mkdirSync(path.join(account, 'projects', '-w-app', 'memory'), { recursive: true })
+  fs.writeFileSync(path.join(account, 'projects', '-w-app', 'memory', 'MEMORY.md'), 'acme memory')
+  fs.writeFileSync(path.join(account, 'settings.json'), '{"theme":"light"}')
+
+  const r = lib.applyShare(account, source, 'memory', { now: 0 })
+  assert.deepStrictEqual(r.errors, [])
+  assert.ok(fs.lstatSync(path.join(account, 'projects')).isSymbolicLink())
+  assert.strictEqual(fs.readFileSync(path.join(account, 'CLAUDE.md'), 'utf8'), 'mine')
+  // The account's session joins the source; its memory file clashes, so the source's wins and the account's is backed up.
+  assert.strictEqual(fs.readFileSync(path.join(source, 'projects', '-w-app', 's1.jsonl'), 'utf8'), 'acme session')
+  assert.strictEqual(fs.readFileSync(path.join(account, 'projects', '-w-app', 'memory', 'MEMORY.md'), 'utf8'), 'source memory')
+  assert.strictEqual(fs.readFileSync(path.join(r.backup, 'projects', '-w-app', 'memory', 'MEMORY.md'), 'utf8'), 'acme memory')
+  // Settings are not part of memory, and history.jsonl, which neither has, waits until the source has one.
+  assert.strictEqual(fs.readFileSync(path.join(account, 'settings.json'), 'utf8'), '{"theme":"light"}')
+  assert.ok(!fs.existsSync(path.join(account, 'history.jsonl')))
+  assert.ok(!fs.existsSync(path.join(account, '.claude.json')))
+
+  assert.deepStrictEqual(lib.applyShare(account, source, 'memory'), { linked: [], unlinked: [], backup: null, errors: [] })
+})
+
+test('sharing everything links the settings, and an item Claude Code replaced with a file is linked again', () => {
+  const { source, account } = shareSandbox()
+  lib.applyShare(account, source, 'all')
+  fs.writeFileSync(path.join(account, 'settings.json'), '{"theme":"dark","model":"opus"}')
+  assert.strictEqual(fs.readFileSync(path.join(source, 'settings.json'), 'utf8'), '{"theme":"dark","model":"opus"}')
+
+  fs.unlinkSync(path.join(account, 'CLAUDE.md'))
+  fs.writeFileSync(path.join(account, 'CLAUDE.md'), 'replaced')
+  const r = lib.applyShare(account, source, 'all')
+  assert.deepStrictEqual(r.linked, ['CLAUDE.md'])
+  assert.strictEqual(fs.readFileSync(path.join(account, 'CLAUDE.md'), 'utf8'), 'mine')
+  assert.strictEqual(fs.readFileSync(path.join(r.backup, 'CLAUDE.md'), 'utf8'), 'replaced')
+})
+
+test('sharing less keeps a copy of the settings and leaves the conversations with the default account', () => {
+  const { source, account } = shareSandbox()
+  lib.applyShare(account, source, 'all')
+  const r = lib.applyShare(account, source, 'memory')
+  assert.ok(r.unlinked.includes('settings.json'))
+  assert.ok(!fs.lstatSync(path.join(account, 'settings.json')).isSymbolicLink())
+  assert.strictEqual(fs.readFileSync(path.join(account, 'settings.json'), 'utf8'), '{"theme":"dark"}')
+  assert.ok(fs.lstatSync(path.join(account, 'projects')).isSymbolicLink())
+
+  lib.applyShare(account, source, 'none')
+  assert.ok(!fs.existsSync(path.join(account, 'projects')))
+  assert.ok(fs.existsSync(path.join(source, 'projects', '-w-app', 'memory', 'MEMORY.md')))
+  assert.ok(!fs.lstatSync(path.join(account, 'CLAUDE.md')).isSymbolicLink())
+})
+
+test('a link the user made to somewhere else is left alone', () => {
+  const { p, source, account } = shareSandbox()
+  fs.mkdirSync(path.join(p.home, 'elsewhere'))
+  fs.symlinkSync(path.join(p.home, 'elsewhere'), path.join(account, 'projects'))
+  const r = lib.applyShare(account, source, 'memory')
+  assert.strictEqual(r.errors.length, 1)
+  assert.strictEqual(fs.realpathSync(path.join(account, 'projects')), path.join(p.home, 'elsewhere'))
+})
+
+test('the share choices are saved per account, applied again, and dropped with the account', () => {
+  const { p, source, account } = shareSandbox()
+  fs.mkdirSync(p.base, { recursive: true })
+  fs.writeFileSync(p.accounts, `default\t~/.claude\nacme\t~/.claude-acme\n`)
+  lib.writeShare(p, 'acme', 'memory')
+  assert.strictEqual(lib.shareLevel(p, 'acme'), 'memory')
+  assert.strictEqual(lib.shareLevel(p, 'default'), 'none')
+  const [r] = lib.applyShares(p)
+  assert.strictEqual(r.name, 'acme')
+  assert.strictEqual(fs.realpathSync(path.join(account, 'projects')), fs.realpathSync(path.join(source, 'projects')))
+  lib.writeShare(p, 'acme', 'all')
+  assert.strictEqual(fs.readFileSync(p.sync, 'utf8'), 'acme\tall\n')
+  lib.removeAccount(p, 'acme')
+  assert.strictEqual(lib.shareLevel(p, 'acme'), 'none')
+})

@@ -13,6 +13,7 @@ function paths(home = os.homedir()) {
     folders: path.join(base, 'folders'),
     sessions: path.join(base, 'sessions'),
     ledger: path.join(base, 'ledger'),
+    sync: path.join(base, 'sync'),
     bin: path.join(base, 'bin'),
   }
 }
@@ -130,6 +131,149 @@ function removeAccount(p, name) {
   }
   fs.writeFileSync(p.accounts, keep(p.accounts).filter(l => (l.split('\t')[0] || '').trim() !== name).join('\n') + '\n')
   if (fs.existsSync(p.folders)) fs.writeFileSync(p.folders, keep(p.folders).join('\n') + '\n')
+  if (fs.existsSync(p.sync)) writeShare(p, name, 'none')
+}
+
+// ---- Sharing with the default account ----
+// An account can share what it keeps in its config dir with the default one: each shared item becomes a link to the
+// default account's copy. The sign-in (.claude.json and the keychain entry) is never shared. The choice is kept in the
+// `sync` file, name<TAB>level, so it can be applied again when Claude Code replaces a link with a file of its own.
+
+// Conversations and memory (projects/<folder>/memory sits next to the transcripts), the prompt history, the
+// checkpoints a resumed conversation rewinds to, and your own CLAUDE.md.
+const CONVERSATIONS = ['projects', 'file-history', 'todos']
+const SHARE_ITEMS = {
+  memory: [...CONVERSATIONS, 'history.jsonl', 'CLAUDE.md'],
+  all: [...CONVERSATIONS, 'history.jsonl', 'CLAUDE.md', 'settings.json', 'keybindings.json', 'plugins', 'commands', 'agents', 'skills', 'output-styles'],
+}
+const SHARE_LEVELS = ['none', 'memory', 'all']
+const FILE_ITEMS = new Set(['history.jsonl', 'CLAUDE.md', 'settings.json', 'keybindings.json'])
+
+// The account the others share with: the one named default, else the first.
+function shareSource(accounts) {
+  return accounts.find(a => a.name === 'default') ?? accounts[0]
+}
+
+function readShares(p) {
+  return new Map(readRows(p.sync).filter(r => SHARE_LEVELS.includes(r[1])).map(r => [r[0], r[1]]))
+}
+
+function shareLevel(p, name) {
+  return readShares(p).get(name) ?? 'none'
+}
+
+function writeShare(p, name, level) {
+  let lines = []
+  try {
+    lines = fs.readFileSync(p.sync, 'utf8').split('\n').filter(l => l.trim())
+  } catch {}
+  const kept = lines.filter(l => l.trim().startsWith('#') || (l.split('\t')[0] || '').trim() !== name)
+  if (level !== 'none') kept.push(`${name}\t${level}`)
+  fs.mkdirSync(p.base, { recursive: true })
+  fs.writeFileSync(p.sync, kept.length ? kept.join('\n') + '\n' : '')
+}
+
+function lstat(file) {
+  try {
+    return fs.lstatSync(file)
+  } catch {
+    return null
+  }
+}
+
+function linksTo(file, target) {
+  const s = lstat(file)
+  if (!s?.isSymbolicLink()) return false
+  try {
+    return fs.realpathSync(file) === fs.realpathSync(target)
+  } catch {
+    return false
+  }
+}
+
+// Moves what src has and dst lacks into dst, folder by folder. What both have stays in src.
+function mergeInto(src, dst) {
+  for (const name of fs.readdirSync(src)) {
+    const from = path.join(src, name)
+    const to = path.join(dst, name)
+    const there = lstat(to)
+    if (!there) fs.renameSync(from, to)
+    else if (there.isDirectory() && lstat(from).isDirectory()) {
+      mergeInto(from, to)
+      if (fs.readdirSync(from).length === 0) fs.rmdirSync(from)
+    }
+  }
+}
+
+function makeLink(target, file, isDir, platform = process.platform) {
+  fs.symlinkSync(target, file, platform === 'win32' ? (isDir ? 'junction' : 'file') : undefined)
+}
+
+// Links each item of the level from the account's dir to the source's, and puts back the items the level no longer
+// shares. What the account had is merged into the source where the source lacks it; the rest goes to a backup folder
+// in the account's dir. Running it again changes nothing. Returns { linked, unlinked, backup, errors }.
+function applyShare(accountDir, sourceDir, level, { platform = process.platform, now = Date.now() } = {}) {
+  const wanted = new Set(SHARE_ITEMS[level] ?? [])
+  const result = { linked: [], unlinked: [], backup: null, errors: [] }
+  const backupDir = path.join(accountDir, `billable-backup-${new Date(now).toISOString().replace(/[:.]/g, '-')}`)
+  const backup = (from, name) => {
+    fs.mkdirSync(backupDir, { recursive: true })
+    fs.renameSync(from, path.join(backupDir, name))
+    result.backup = backupDir
+  }
+  fs.mkdirSync(accountDir, { recursive: true })
+  for (const name of new Set(Object.values(SHARE_ITEMS).flat())) {
+    const own = path.join(accountDir, name)
+    const shared = path.join(sourceDir, name)
+    const isDir = !FILE_ITEMS.has(name)
+    try {
+      if (!wanted.has(name)) {
+        if (!linksTo(own, shared)) continue
+        fs.unlinkSync(own)
+        // Conversations stay with the source; settings and tools are copied, so the account keeps working as before.
+        if (!CONVERSATIONS.includes(name) && lstat(shared)) fs.cpSync(shared, own, { recursive: true, verbatimSymlinks: true })
+        result.unlinked.push(name)
+        continue
+      }
+      if (linksTo(own, shared)) continue
+      const mine = lstat(own)
+      if (mine?.isSymbolicLink()) {
+        result.errors.push(`${name} already links to ${fs.readlinkSync(own)}`)
+        continue
+      }
+      if (!lstat(shared)) {
+        if (mine) fs.renameSync(own, shared)
+        else if (isDir) fs.mkdirSync(shared, { recursive: true })
+        // A file neither has: linked once the source has it.
+        else continue
+      } else if (mine) {
+        if (isDir && mine.isDirectory()) {
+          mergeInto(own, shared)
+          if (fs.readdirSync(own).length === 0) fs.rmdirSync(own)
+          else backup(own, name)
+        } else backup(own, name)
+      }
+      makeLink(shared, own, isDir, platform)
+      result.linked.push(name)
+    } catch (err) {
+      result.errors.push(`${name}: ${err.message}`)
+    }
+  }
+  return result
+}
+
+// Applies every saved choice again: Claude Code may have replaced a link with a file of its own, and accounts that
+// share with the source need the items it has gained since.
+function applyShares(p) {
+  const accounts = readAccounts(p)
+  const source = shareSource(accounts)
+  const out = []
+  for (const [name, level] of readShares(p)) {
+    const a = accounts.find(x => x.name === name)
+    if (!a || a === source || !fs.existsSync(a.dir)) continue
+    out.push({ name, ...applyShare(a.dir, source.dir, level) })
+  }
+  return out
 }
 
 // claude opens the sign-in page with $BROWSER when it is set; a command that does nothing leaves
@@ -587,6 +731,14 @@ module.exports = {
   pin,
   addAccount,
   removeAccount,
+  SHARE_ITEMS,
+  SHARE_LEVELS,
+  shareSource,
+  readShares,
+  shareLevel,
+  writeShare,
+  applyShare,
+  applyShares,
   noBrowserEnv,
   PLUGIN,
   PUBLIC_MARKETPLACE,
