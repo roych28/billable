@@ -15,7 +15,8 @@ Freelancers and consultants often hold a Claude account per client, plus a perso
 - **The account in the status bar.** The account this folder runs on, the session's tokens and cost, and the highest rate-limit usage. The item turns amber at 90% of a limit.
 - **Switch in one click.** Hover the item: the account and its email come first, then a button for every other account. The choice is saved per folder, so each project keeps its own account and you can work on several at once.
 - **Add accounts from VS Code.** `Add account` creates a config directory for the new account, installs the companion plugin into it, and opens a terminal to sign in. An account you added earlier, or by hand, gets the plugin the next time VS Code starts, once the plugin runs on any of your accounts. An account where you turned the plugin off is left alone.
-- **Pick up where you stopped.** After a switch, start a new conversation right where you are: it receives the last request, the last answer and the path of the previous transcript, so the work continues on the new account without repeating yourself.
+- **Pick up where you stopped.** After a switch, start a new conversation right where you are: it receives the last request, the last answer and the path of the previous transcript, so the work continues on the new account without repeating yourself. A new conversation on the same account starts fresh.
+- **Sign in where it belongs.** Signing in prints a link and waits for a code, so you open it in the browser signed in to that account (or a private window), not the default one. Switching to an account that is not signed in offers the sign-in first.
 - **Real token counts.** Tokens are read from the session transcript: input, output, cache reads and cache writes, for the whole session, resumed sessions included.
 - **Cost report by account.** What each account, and each folder under it, cost in a month. One account per client means one line per client on your invoice. Open it from the hover or with `Billable: Cost report by account`.
 - **Share memory between accounts, or keep them apart.** Each account is its own config directory, so by default it has its own conversations, memory and settings. `Share conversations, memory and settings with the default account` links an account to the default one: conversations and memory, or everything but the sign-in. Each account keeps its own sign-in, plan and limits.
@@ -54,7 +55,7 @@ Pro adds the full history of the cost report, beyond the current and the previou
 
 ## Getting started
 
-1. Install this extension and the companion Claude Code plugin. At the prompt of a Claude Code session:
+1. Install this extension and the companion Claude Code plugin. The extension offers to install the plugin the first time it starts; to do it yourself, at the prompt of a Claude Code session:
    ```
    /plugin install multi-account --marketplace roych28/claude-multi-account
    ```
@@ -81,6 +82,9 @@ The launcher reads these files and starts Claude Code on the right account. The 
 - `Billable: Switch account for this folder`
 - `Billable: Cost report by account`
 - `Billable: Add account`
+- `Billable: Sign in to an account again`
+- `Billable: Remove account`
+- `Billable: Share conversations, memory and settings with the default account`
 - `Billable: Stop idle sessions`
 - `Billable: Start Claude Code tabs on the folder's account`
 - `Billable: Refresh`

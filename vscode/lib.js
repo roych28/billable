@@ -117,11 +117,24 @@ function addAccount(p, name, dir) {
   fs.mkdirSync(expand(dir, p.home), { recursive: true })
 }
 
+// Why an account must not be removed, or null. Removing it sends its folder to the trash, so never the account the
+// others share with, ~/.claude itself, a folder another account uses too, or one that holds the home or Billable folder.
+function removeBlocker(p, name) {
+  const accounts = readAccounts(p)
+  const a = readRows(p.accounts).some(r => r[0] === name) ? accounts.find(x => x.name === name) : null
+  if (!a) return `There is no account named ${name}`
+  if (a === shareSource(accounts)) return `${name} is the default account and cannot be removed`
+  const key = pathKey(a.dir)
+  if (key === pathKey(path.join(p.home, '.claude'))) return `${name} runs on ~/.claude, Claude Code's own folder, and cannot be removed`
+  if (accounts.some(x => x !== a && pathKey(x.dir) === key)) return `${name} uses the same folder as another account`
+  if (isInside(p.home, a.dir) || isInside(p.base, a.dir)) return `${name}'s folder holds your home or Billable folder`
+  return null
+}
+
 // Drops the account and every folder rule that runs on it; its folder is left for the caller.
 function removeAccount(p, name) {
-  if (name === 'default') throw new Error('The default account cannot be removed')
-  const rows = readRows(p.accounts)
-  if (!rows.some(r => r[0] === name)) throw new Error(`There is no account named ${name}`)
+  const blocker = removeBlocker(p, name)
+  if (blocker) throw new Error(blocker)
   const keep = file => {
     let lines = []
     try {
@@ -262,18 +275,52 @@ function applyShare(accountDir, sourceDir, level, { platform = process.platform,
   return result
 }
 
-// Applies every saved choice again: Claude Code may have replaced a link with a file of its own, and accounts that
-// share with the source need the items it has gained since.
-function applyShares(p) {
-  const accounts = readAccounts(p)
-  const source = shareSource(accounts)
-  const out = []
-  for (const [name, level] of readShares(p)) {
-    const a = accounts.find(x => x.name === name)
-    if (!a || a === source || !fs.existsSync(a.dir)) continue
-    out.push({ name, ...applyShare(a.dir, source.dir, level) })
+// Runs fn while holding a lock file, or returns null at once when another window holds it. VS Code restores
+// several windows together, and each would otherwise move the same files at the same time.
+function withLock(file, fn, { staleMs = 60_000 } = {}) {
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  let fd
+  try {
+    fd = fs.openSync(file, 'wx')
+  } catch (err) {
+    if (err.code !== 'EEXIST') throw err
+    // A window that died holding it leaves it behind.
+    if (Date.now() - (lstat(file)?.mtimeMs ?? 0) < staleMs) return null
+    fs.rmSync(file, { force: true })
+    try {
+      fd = fs.openSync(file, 'wx')
+    } catch {
+      return null
+    }
   }
-  return out
+  try {
+    return fn()
+  } finally {
+    fs.closeSync(fd)
+    fs.rmSync(file, { force: true })
+  }
+}
+
+function shareLock(p) {
+  return path.join(p.base, 'sync.lock')
+}
+
+// Applies every saved choice again: Claude Code may have replaced a link with a file of its own, and accounts that
+// share with the source need the items it has gained since. Another window doing it already returns [].
+function applyShares(p) {
+  return (
+    withLock(shareLock(p), () => {
+      const accounts = readAccounts(p)
+      const source = shareSource(accounts)
+      const out = []
+      for (const [name, level] of readShares(p)) {
+        const a = accounts.find(x => x.name === name)
+        if (!a || a === source || !fs.existsSync(a.dir)) continue
+        out.push({ name, ...applyShare(a.dir, source.dir, level) })
+      }
+      return out
+    }) ?? []
+  )
 }
 
 // claude opens the sign-in page with $BROWSER when it is set; a command that does nothing leaves
@@ -337,6 +384,14 @@ function accountsMissingPlugin(accounts) {
   return states.filter(a => a.state === 'missing' && fs.existsSync(a.dir))
 }
 
+// Accounts to offer the plugin to, when it runs on none of them and was turned off on none: a first install, which
+// is asked for rather than done.
+function accountsToOfferPlugin(accounts) {
+  const states = accounts.map(a => ({ ...a, state: pluginState(a.dir) }))
+  if (states.some(a => a.state !== 'missing')) return []
+  return states.filter(a => fs.existsSync(a.dir))
+}
+
 // The claude binary inside the Claude Code extension, so installing does not depend on claude being on PATH.
 function claudeBinary(claudeCodePath, platform = process.platform) {
   if (claudeCodePath) {
@@ -371,6 +426,33 @@ function latestStatus(p, roots, account) {
   return best
 }
 
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return err.code === 'EPERM'
+  }
+}
+
+// Whether a Claude Code session still runs. Claude Code keeps sessions/<pid>.json in the config dir while a session
+// runs; without that folder (older versions) the session is taken as open, since nothing says otherwise.
+function sessionOpen(dir, sessionId, alive = pidAlive) {
+  let files
+  try {
+    files = fs.readdirSync(path.join(dir, 'sessions')).filter(f => f.endsWith('.json'))
+  } catch {
+    return true
+  }
+  for (const f of files) {
+    try {
+      const d = JSON.parse(fs.readFileSync(path.join(dir, 'sessions', f), 'utf8'))
+      if (d.sessionId === sessionId && Number.isInteger(Number(d.pid)) && alive(Number(d.pid))) return true
+    } catch {}
+  }
+  return false
+}
+
 // What the status bar shows: the account the folder is set to, so a switch shows at once, usage from the latest
 // session on that account, and a conversation still open on another account. Claude Code runs a window's
 // conversations in its first folder, so in a multi-root workspace all of it comes from that folder alone.
@@ -384,7 +466,10 @@ function folderView(p, roots) {
   const current = accounts.find(a => a.name === currentName)
   const status = latestStatus(p, [folder], currentName)
   const email = status?.account.email ?? (current ? emailOf(current.dir, p.home) : NOT_SIGNED_IN)
-  const openOn = latest && latest.account.name !== currentName ? latest.account.name : null
+  // Only while that conversation is still open: once it is closed, nothing runs on the old account.
+  const oldDir = latest && accounts.find(a => a.name === latest.account.name)?.dir
+  const stillOpen = latest && (!oldDir || sessionOpen(oldDir, latest.sessionId))
+  const openOn = latest && latest.account.name !== currentName && stillOpen ? latest.account.name : null
   return { folder, accounts, status, openOn, currentName, email }
 }
 
@@ -730,6 +815,7 @@ module.exports = {
   emailOf,
   pin,
   addAccount,
+  removeBlocker,
   removeAccount,
   SHARE_ITEMS,
   SHARE_LEVELS,
@@ -739,6 +825,8 @@ module.exports = {
   writeShare,
   applyShare,
   applyShares,
+  withLock,
+  shareLock,
   noBrowserEnv,
   PLUGIN,
   PUBLIC_MARKETPLACE,
@@ -746,8 +834,10 @@ module.exports = {
   pluginSource,
   pluginInstallSteps,
   accountsMissingPlugin,
+  accountsToOfferPlugin,
   claudeBinary,
   latestStatus,
+  sessionOpen,
   folderView,
   sharedSignIns,
   pruneSessions,

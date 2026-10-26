@@ -519,3 +519,70 @@ test('the share choices are saved per account, applied again, and dropped with t
   lib.removeAccount(p, 'acme')
   assert.strictEqual(lib.shareLevel(p, 'acme'), 'none')
 })
+
+test('an account is never removed when its folder is ~/.claude, the default account, shared, or holds home', () => {
+  const p = sandbox()
+  fs.mkdirSync(p.base, { recursive: true })
+  fs.writeFileSync(
+    p.accounts,
+    ['personal\t~/.claude', 'home\t~/.claude', 'twin1\t~/.claude-twin', 'twin2\t~/.claude-twin', 'root\t/', 'acme\t~/.claude-acme', ''].join('\n'),
+  )
+  // Without a default line, the first account is the one the others share with.
+  assert.match(lib.removeBlocker(p, 'personal'), /default account/)
+  assert.match(lib.removeBlocker(p, 'home'), /~\/\.claude/)
+  assert.match(lib.removeBlocker(p, 'twin1'), /same folder/)
+  assert.match(lib.removeBlocker(p, 'root'), /home or Billable folder/)
+  assert.match(lib.removeBlocker(p, 'nobody'), /no account named/)
+  assert.strictEqual(lib.removeBlocker(p, 'acme'), null)
+  assert.throws(() => lib.removeAccount(p, 'home'), /cannot be removed/)
+  assert.ok(lib.readAccounts(p).some(a => a.name === 'home'), 'a refused removal changes nothing')
+})
+
+test('one window at a time applies the shares, and a lock left by a dead window expires', () => {
+  const p = sandbox()
+  const lock = lib.shareLock(p)
+  let inner
+  const outer = lib.withLock(lock, () => {
+    inner = lib.withLock(lock, () => 'second')
+    return 'first'
+  })
+  assert.strictEqual(outer, 'first')
+  assert.strictEqual(inner, null, 'a second window skips while the first holds the lock')
+  assert.ok(!fs.existsSync(lock), 'the lock is released')
+  fs.writeFileSync(lock, '')
+  assert.strictEqual(lib.applyShares(p).length, 0)
+  const old = (Date.now() - 120_000) / 1000
+  fs.utimesSync(lock, old, old)
+  assert.strictEqual(lib.withLock(lock, () => 'after'), 'after')
+})
+
+test('the open-chat warning goes away once that conversation is closed', () => {
+  const p = sandbox()
+  const acme = path.join(p.home, '.claude-acme')
+  fs.mkdirSync(p.sessions, { recursive: true })
+  fs.writeFileSync(p.accounts, `personal\t~/.claude-personal\nacme\t~/.claude-acme\n`)
+  fs.writeFileSync(p.folders, '/w/app\tpersonal\n')
+  fs.writeFileSync(
+    path.join(p.sessions, 'old.json'),
+    JSON.stringify({ sessionId: 'old', cwd: '/w/app', account: { name: 'acme', email: 'a@x.test' }, usage: { limits: [] }, updatedAt: 1 }),
+  )
+  // Claude Code keeps no session files there: nothing says it closed.
+  assert.strictEqual(lib.folderView(p, ['/w/app']).openOn, 'acme')
+  fs.mkdirSync(path.join(acme, 'sessions'), { recursive: true })
+  assert.strictEqual(lib.folderView(p, ['/w/app']).openOn, null, 'closed: no session file names it')
+  fs.writeFileSync(path.join(acme, 'sessions', `${process.pid}.json`), JSON.stringify({ pid: process.pid, sessionId: 'old' }))
+  assert.strictEqual(lib.folderView(p, ['/w/app']).openOn, 'acme', 'its process still runs')
+  assert.strictEqual(lib.sessionOpen(acme, 'old', () => false), false, 'a session file of a dead process does not count')
+})
+
+test('the plugin is offered when no account has it, and not once one has it or turned it off', () => {
+  const { home } = sandbox()
+  const a = pluginAccount(home, 'a')
+  const b = pluginAccount(home, 'b')
+  const gone = { name: 'gone', dir: path.join(home, '.claude-gone') }
+  assert.deepStrictEqual(lib.accountsToOfferPlugin([a, b, gone]).map(x => x.name), ['a', 'b'])
+  const off = pluginAccount(home, 'off', { enabled: false })
+  assert.deepStrictEqual(lib.accountsToOfferPlugin([a, off]), [])
+  const on = pluginAccount(home, 'on', { installedFrom: 'claude-multi-account' })
+  assert.deepStrictEqual(lib.accountsToOfferPlugin([a, on]), [])
+})

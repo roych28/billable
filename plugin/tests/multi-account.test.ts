@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On, RenderElement } from 'claude-code'
 
-import { accountFor } from '../hooks/register'
+import { accountFor, pinTarget } from '../hooks/register'
 
 const HOME = '/Users/tester'
 const CWD = `${HOME}/code/app`
@@ -21,6 +21,7 @@ function world(
   sessionId: string,
   seen: (readonly string[] | undefined)[] = [],
   env: Record<string, string> = {},
+  root: string = CWD,
 ) {
   on('prompt.submit', ($, e) => {
     seen.push(e.context)
@@ -37,7 +38,7 @@ function world(
     return { value: undefined }
   })
   on('process.run', () => ({
-    value: { exitCode: 0, stdout: `${CWD}\n`, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+    value: { exitCode: 0, stdout: `${root}\n`, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
   }))
   on('session.cwd', () => ({ value: CWD }))
   on('session.id', () => ({ value: sessionId }))
@@ -183,6 +184,28 @@ test('switching pins this folder in the folders file and keeps other rules', asy
   expect(files[`${BASE}/folders`]).not.toContain(`${CWD}\t`)
 })
 
+test('inside a repository whose workspace folder has its own rule, a switch moves that rule, so it takes effect', async ($, on) => {
+  // VS Code pinned the workspace folder app, inside the repository code.
+  const files = { ...signedIn(), [`${BASE}/folders`]: `${CWD}\tacme\n` }
+  world(on, files, 's-10', [], {}, `${HOME}/code`)
+  await start($)
+  const shown = await $.command.run({ command: 'account', args: 'personal' } as never)
+  expect(files[`${BASE}/folders`]).toBe(`${CWD}\tpersonal\n`)
+  expect(JSON.stringify(shown)).toContain(`${CWD} now runs on personal`)
+})
+
+test('a switch pins the repository root when no deeper rule covers the folder', () => {
+  const rules = [
+    { path: '*', account: 'personal' },
+    { path: '/w/repo/app', account: 'acme' },
+    { path: '/w/repo/app/web', account: 'globex' },
+    { path: '/w/other', account: 'acme' },
+  ]
+  expect(pinTarget('/w/repo', '/w/repo/app/web/src', rules)).toBe('/w/repo/app/web')
+  expect(pinTarget('/w/repo', '/w/repo/api', rules)).toBe('/w/repo')
+  expect(pinTarget('/w/repo', '/w/repo', rules)).toBe('/w/repo')
+})
+
 test('the longest matching folder rule wins, then the default', () => {
   const rules = [
     { path: '*', account: 'personal' },
@@ -214,6 +237,15 @@ test('a new session gets where the previous one stopped, on its first prompt onl
   expect(seen[0]?.join('\n')).toContain('the webhook still fails on retries')
   expect(seen[0]?.join('\n')).toContain('old-session.jsonl')
   expect(seen[1]).toBeUndefined()
+})
+
+test('a new conversation on the same account starts fresh, without the previous one', async ($, on) => {
+  const seen: (readonly string[] | undefined)[] = []
+  const note = { sessionId: 'old', account: 'acme', at: 1_000_000 - 60_000, transcript: 'x', lastRequest: 'a', lastAnswer: 'b' }
+  world(on, { ...signedIn(), [HANDOFF]: JSON.stringify(note) }, 's-11', seen)
+  await start($)
+  await $.prompt.submit({ text: 'something new', wait: false, origin: { kind: 'composer' } })
+  expect(seen[0]).toBeUndefined()
 })
 
 test('the same session resumed does not get its own note back', async ($, on) => {

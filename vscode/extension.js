@@ -333,9 +333,7 @@ function activate(context) {
     const account = accounts.find(a => a.name === pick)
     if (!account) return
     signIn(account.name, account.dir)
-    vscode.window.showInformationMessage(
-      `Sign in to ${account.name}: open the link in the terminal in a browser signed in to that account (or a private window), then paste the code back into the terminal.`,
-    )
+    vscode.window.showInformationMessage(SIGN_IN_HOW(account.name))
   }
 
   function launcherPath() {
@@ -353,24 +351,72 @@ function activate(context) {
   async function switchTo(name) {
     const folder = folders()[0]
     if (!folder) return
-    lib.pin(p, folder, name)
-    refresh()
+    // A conversation on an account with no sign-in asks to sign in through the default browser, which usually
+    // authorizes another Claude account. So the sign-in comes first, with the link and the code.
+    const target = lib.readAccounts(p).find(a => a.name === name)
+    if (target && lib.emailOf(target.dir, p.home) === lib.NOT_SIGNED_IN) {
+      const signInFirst = 'Sign in'
+      const anyway = 'Switch anyway'
+      const answer = await vscode.window.showWarningMessage(
+        `${name} is not signed in. Sign in first: otherwise a new conversation on ${name} asks to sign in through your default browser, which is usually signed in to another Claude account.`,
+        signInFirst,
+        anyway,
+      )
+      if (!answer) return
+      lib.pin(p, folder, name)
+      refresh()
+      if (answer === signInFirst) {
+        signIn(name, target.dir, undefined, email => switched(folder, `${name} is signed in as ${email}.`))
+        vscode.window.showInformationMessage(SIGN_IN_HOW(name))
+        return
+      }
+    } else {
+      lib.pin(p, folder, name)
+      refresh()
+    }
+    await switched(folder)
+  }
+
+  // Says where the folder's new conversations run now, or why they do not run there yet.
+  async function switched(folder, lead = '') {
     const next = lib.accountFor(folder, lib.readRules(p)) ?? 'the default account'
+    const before = lead ? `${lead} ` : ''
     if (launcherMissing()) {
       const setUp = 'Set up'
       const answer = await vscode.window.showWarningMessage(
-        `${path.basename(folder)} is set to ${next}, but Claude Code tabs do not start through the Billable launcher yet, so they still run on the default account.`,
+        `${before}${path.basename(folder)} is set to ${next}, but Claude Code tabs do not start through the Billable launcher yet, so they still run on the default account.`,
         setUp,
       )
       if (answer === setUp) await setupLauncher()
       return
     }
+    await offerNewConversation(`${before}${path.basename(folder)} now runs on ${next}. A new conversation picks up where the last one stopped.`)
+  }
+
+  async function offerNewConversation(text) {
     const start = 'Start new conversation'
-    const answer = await vscode.window.showInformationMessage(
-      `${path.basename(folder)} now runs on ${next}. A new conversation picks up where the last one stopped.`,
-      start,
-    )
+    const answer = await vscode.window.showInformationMessage(text, start)
     if (answer === start) await vscode.commands.executeCommand('claude-vscode.newConversation')
+  }
+
+  const SIGN_IN_HOW = name =>
+    `Sign in to ${name}: open the link in the terminal in a browser signed in to that account (or a private window), then paste the code back into the terminal.`
+
+  // Right after a new account signs in: it starts with nothing of the default account unless it shares.
+  async function offerShare(name, email) {
+    const src = source()
+    const account = lib.readAccounts(p).find(a => a.name === name)
+    if (!account || account === src || lib.shareLevel(p, name) !== 'none') {
+      return vscode.window.showInformationMessage(`${name} is signed in as ${email}.`)
+    }
+    const memory = 'Share conversations and memory'
+    const apart = 'Keep apart'
+    const answer = await vscode.window.showInformationMessage(
+      `${name} is signed in as ${email}. Share conversations and memory with ${src.name}, so Claude on ${name} knows what it learned there? Keep it apart for a client whose work should stay separate. You can change this later from the status bar.`,
+      memory,
+      apart,
+    )
+    if (answer === memory) setShare(account, src, 'memory')
   }
 
   async function addAccount() {
@@ -405,15 +451,14 @@ function activate(context) {
         vscode.window.showWarningMessage(`Billable could not add its plugin to ${name}: ${err.message}`)
       }),
     )
-    signIn(name, lib.expand(dir, p.home), email)
+    signIn(name, lib.expand(dir, p.home), email, signedIn => offerShare(name, signedIn))
     refresh()
-    vscode.window.showInformationMessage(
-      `Sign in to ${name}: open the link in the terminal in a browser signed in to that account (or a private window), then paste the code back into the terminal. Then switch a folder to ${name} from the status bar.`,
-    )
+    vscode.window.showInformationMessage(`${SIGN_IN_HOW(name)} Then switch a folder to ${name} from the status bar.`)
   }
 
   async function removeAccount() {
-    const accounts = lib.readAccounts(p).filter(a => a.name !== 'default')
+    // Never the default account, ~/.claude, or a folder another account uses: the folder goes to the trash.
+    const accounts = lib.readAccounts(p).filter(a => !lib.removeBlocker(p, a.name))
     if (!accounts.length) return vscode.window.showInformationMessage('There are no accounts to remove besides the default one.')
     const pick = await vscode.window.showQuickPick(
       accounts.map(a => ({ label: a.name, description: `${lib.emailOf(a.dir, p.home)}  ${a.dir}`, account: a })),
@@ -436,17 +481,23 @@ function activate(context) {
     }
     try {
       lib.removeAccount(p, name)
-      await vscode.workspace.fs.delete(vscode.Uri.file(dir), { recursive: true, useTrash: true })
     } catch (err) {
-      vscode.window.showErrorMessage(`Could not remove ${name}: ${err.message}`)
+      return vscode.window.showErrorMessage(`Could not remove ${name}: ${err.message}`)
     }
     refresh()
+    try {
+      // A shared item in the folder is a link; the trash takes the link, never what it points to.
+      await vscode.workspace.fs.delete(vscode.Uri.file(dir), { recursive: true, useTrash: true })
+    } catch (err) {
+      return vscode.window.showWarningMessage(`${name} was removed, but ${dir} could not be moved to the trash: ${err.message}`)
+    }
     vscode.window.showInformationMessage(`${name} was removed.`)
   }
 
   // Runs claude itself, not a shell: a claude() wrapper in the shell profile (the one the README suggests)
   // would replace CLAUDE_CONFIG_DIR with the folder's account and sign that account in again.
-  function signIn(name, dir, email) {
+  // `then` gets the email once the sign-in succeeds; without it, Billable says which email signed in.
+  function signIn(name, dir, email, then) {
     const terminal = vscode.window.createTerminal({
       name: `Claude login: ${name}`,
       shellPath: login.claude(),
@@ -466,7 +517,7 @@ function activate(context) {
       const signedIn = lib.emailOf(dir, p.home)
       const wrong = email && signedIn !== lib.NOT_SIGNED_IN && signedIn.toLowerCase() !== email.toLowerCase()
       if (signedIn !== lib.NOT_SIGNED_IN && !wrong) {
-        return vscode.window.showInformationMessage(`${name} is signed in as ${signedIn}.`)
+        return then ? then(signedIn) : vscode.window.showInformationMessage(`${name} is signed in as ${signedIn}.`)
       }
       const again = 'Sign in again'
       const answer = await vscode.window.showWarningMessage(
@@ -475,7 +526,7 @@ function activate(context) {
           : `${name} is not signed in yet.`,
         again,
       )
-      if (answer === again) signIn(name, dir, email)
+      if (answer === again) signIn(name, dir, email, then)
     })
     context.subscriptions.push(closed)
     terminal.show()
@@ -553,15 +604,23 @@ function activate(context) {
       },
     )
     if (!pick || pick.level === level) return
-    const r = { name: account.name, ...lib.applyShare(account.dir, src.dir, pick.level) }
-    lib.writeShare(p, account.name, pick.level)
+    setShare(account, src, pick.level)
+  }
+
+  function setShare(account, src, level) {
+    const applied = lib.withLock(lib.shareLock(p), () => lib.applyShare(account.dir, src.dir, level))
+    if (!applied) {
+      return vscode.window.showWarningMessage('Another VS Code window is updating what accounts share. Try again in a moment.')
+    }
+    const r = { name: account.name, ...applied }
+    lib.writeShare(p, account.name, level)
     refresh()
     const what =
-      pick.level === 'none'
+      level === 'none'
         ? `${account.name} no longer shares with ${src.name}. It keeps a copy of the settings; the conversations stay with ${src.name}.`
-        : `${account.name} now shares ${SHARE_LABELS[pick.level].toLowerCase()} with ${src.name}. New conversations on ${account.name} see it; open ones pick it up once restarted.`
+        : `${account.name} now shares ${SHARE_LABELS[level].toLowerCase()} with ${src.name}. New conversations on ${account.name} see it; open ones pick it up once restarted.`
     const show = r.errors.length ? vscode.window.showWarningMessage : vscode.window.showInformationMessage
-    show(`${what} ${shareSummary(r, src.name)}`.trim())
+    return show(`${what} ${shareSummary(r, src.name)}`.trim())
   }
 
   async function askForPro(feature) {
@@ -662,11 +721,42 @@ function activate(context) {
   )
 
   const hasClaudeCode = vscode.extensions.getExtension('anthropic.claude-code') !== undefined
-  if (hasClaudeCode && !vscode.workspace.getConfiguration('claudeCode').get('claudeProcessWrapper')) {
+  const NEVER = "Don't ask again"
+  if (
+    hasClaudeCode &&
+    !vscode.workspace.getConfiguration('claudeCode').get('claudeProcessWrapper') &&
+    !context.globalState.get('launcherPrompt.off')
+  ) {
     const setUp = 'Set up'
     vscode.window
-      .showInformationMessage('Billable: start Claude Code tabs on the account each folder is set to?', setUp)
-      .then(answer => answer === setUp && setupLauncher())
+      .showInformationMessage('Billable: start Claude Code tabs on the account each folder is set to?', setUp, NEVER)
+      .then(answer => {
+        if (answer === setUp) return setupLauncher()
+        if (answer === NEVER) return context.globalState.update('launcherPrompt.off', true)
+      })
+  }
+
+  // A first install of the companion plugin, which shows the account and cost in the chat and reports usage to the
+  // status bar. Asked for once, not done: it changes the person's Claude Code setup.
+  const offer = hasClaudeCode && !context.globalState.get('pluginPrompt.off') ? lib.accountsToOfferPlugin(lib.readAccounts(p)) : []
+  if (offer.length) {
+    const install = 'Install'
+    vscode.window
+      .showInformationMessage(
+        'Billable: install its Claude Code plugin? It shows the account, cost and limits in each Claude chat, and the status bar shows usage only once it runs.',
+        install,
+        NEVER,
+      )
+      .then(async answer => {
+        if (answer === NEVER) return context.globalState.update('pluginPrompt.off', true)
+        if (answer !== install) return
+        const failed = []
+        await withProgress('Installing the Billable plugin', async () => {
+          for (const a of offer) await plugin.install(a.dir).catch(err => failed.push(`${a.name} (${err.message})`))
+        })
+        if (failed.length) vscode.window.showWarningMessage(`Billable could not add its plugin to ${failed.join(', ')}.`)
+        else vscode.window.showInformationMessage('Billable plugin installed. New Claude conversations show the account above the prompt.')
+      })
   }
 
   try {

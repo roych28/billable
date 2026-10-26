@@ -104,6 +104,22 @@ export function accountFor(folder: string, list: Rule[]): string | null {
   return best?.account ?? null
 }
 
+// The folder a switch pins: the repository root, unless a rule deeper than it already covers this session's folder
+// (the VS Code status bar pins the workspace folder, which can sit inside a repository). Pinning the root then
+// would change nothing, since the longest matching rule wins.
+export function pinTarget(root: string, cwd: string, list: Rule[]): string {
+  const r = pathKey(root)
+  const c = pathKey(cwd)
+  let best = root
+  for (const rule of list) {
+    if (rule.path === '*') continue
+    const p = pathKey(rule.path)
+    const coversCwd = c === p || c.startsWith(`${p}/`)
+    if (coversCwd && p.startsWith(`${r}/`) && p.length > pathKey(best).length) best = rule.path
+  }
+  return best
+}
+
 async function folderRoot($: EngineInterface, cwd: string): Promise<string> {
   try {
     const ran = await $.process.run(['git', 'rev-parse', '--show-toplevel'], { cwd })
@@ -258,8 +274,11 @@ async function switchTo($: EngineInterface, name: string): Promise<string> {
   if (name !== 'auto' && !list.some(a => a.name === name)) {
     return `Unknown account: ${name}. Known: ${list.map(a => a.name).join(', ')}, or auto.`
   }
-  await pin($, i.folder, name)
-  const next = accountFor(i.folder, await rules($))
+  // The launcher picks the account from the session's own folder, so that is what the switch has to reach.
+  const cwd = await $.session.cwd()
+  const target = pinTarget(i.folder, cwd, await rules($))
+  await pin($, target, name)
+  const next = accountFor(cwd, await rules($))
   await update($, nextAccount, () => next)
 
   const fork = await $.model.fork({ prompt: SUMMARY_PROMPT })
@@ -273,7 +292,7 @@ async function switchTo($: EngineInterface, name: string): Promise<string> {
   }
   await writeStatus($)
   return (
-    `${i.folder} now runs on ${next ?? 'the default account'}.${note}\n` +
+    `${target} now runs on ${next ?? 'the default account'}.${note}\n` +
     'To continue from here: open a new Claude tab, or exit and run claude --continue in this folder.'
   )
 }
@@ -308,7 +327,7 @@ async function refresh($: EngineInterface): Promise<void> {
   const current = list.find(a => pathKey(a.dir) === pathKey(i.current.dir)) ?? i.current
   const others = list.filter(a => pathKey(a.dir) !== pathKey(current.dir) && a.email !== NOT_SIGNED_IN)
   await update($, info, () => ({ ...i, current, others }))
-  const ruled = accountFor(i.folder, await rules($))
+  const ruled = accountFor(await $.session.cwd(), await rules($))
   await update($, nextAccount, () => ruled)
 }
 
@@ -356,7 +375,9 @@ export const register: Register = on => {
     const note = await readHandoff($, loaded.folder)
     const sessionId = await $.session.id()
     const isRecent = note !== null && (await $.clock.now()) - note.at < HANDOFF_MAX_AGE_MS
-    if (isFresh && note && isRecent && note.sessionId !== sessionId) {
+    // Only across a switch: on the same account a new conversation is a fresh start, and the old one is a resume away.
+    const isSwitch = note !== null && note.account !== loaded.current.name
+    if (isFresh && note && isRecent && isSwitch && note.sessionId !== sessionId) {
       await update($, handoff, () => handoffPrompt(note))
     }
     await writeStatus($)

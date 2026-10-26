@@ -125,6 +125,42 @@ check('an account that is not signed in is marked in the hover', async () => {
   assert.ok(t.includes('Switch to globex (not signed in)'), t)
 })
 
+check('switching to an account that is not signed in offers the sign-in first, and cancelling changes nothing', async () => {
+  const { pathKey } = require('../../lib')
+  const folderRule = () =>
+    fs.readFileSync(path.join(base, 'folders'), 'utf8').split('\n').map(l => l.split('\t')).find(([f]) => f && f !== '*' && pathKey(f) === pathKey(workspace))?.[1]
+  const before = folderRule()
+  let warn = answer('showWarningMessage', undefined)
+  const term = fakeTerminal()
+  const info = answer('showInformationMessage', undefined)
+  try {
+    await vscode.commands.executeCommand('claudeMultiAccount.switchTo', 'globex')
+    warn.restore()
+    assert.match(warn.seen[0][0], /globex is not signed in/)
+    assert.deepStrictEqual(warn.seen[0].slice(1), ['Sign in', 'Switch anyway'])
+    assert.strictEqual(folderRule(), before, 'a dismissed warning does not switch')
+    assert.strictEqual(term.made.length, 0)
+
+    warn = answer('showWarningMessage', 'Sign in')
+    await vscode.commands.executeCommand('claudeMultiAccount.switchTo', 'globex')
+    warn.restore()
+    assert.strictEqual(folderRule(), 'globex')
+    assert.strictEqual(term.made.length, 1)
+    assertLogin(term.made[0], path.join(tmp, 'claude-globex'), ['auth', 'login'])
+    // The sign-in ends: Billable says the folder now runs on globex, and offers the new conversation.
+    fs.mkdirSync(path.join(tmp, 'claude-globex'), { recursive: true })
+    signedInAs(path.join(tmp, 'claude-globex'), 'me@globex.test')
+    await term.close(term.made[0])
+    assert.match(info.seen.at(-1)[0], /^globex is signed in as me@globex\.test\. app now runs on globex\./)
+    assert.deepStrictEqual(info.seen.at(-1).slice(1), ['Start new conversation'])
+  } finally {
+    warn.restore()
+    info.restore()
+    term.restore()
+    fs.rmSync(path.join(tmp, 'claude-globex', '.claude.json'), { force: true })
+  }
+})
+
 // Stands in for the person at the keyboard: each stub answers one prompt, then the real one is back.
 function answer(fn, value) {
   const real = vscode.window[fn]
@@ -279,8 +315,15 @@ check('when the sign-in ends, add account says which email the new account signe
     signedInAs(okDir, 'ME@client.test')
     await term.close(term.made[0])
     assert.strictEqual(term.listening(), 1, 'closing another terminal leaves this sign-in waiting')
+    const share = answer('showInformationMessage', 'Share conversations and memory')
     await term.close(term.made[2])
-    assert.strictEqual(info.seen.at(-1)[0], `${name}k is signed in as ME@client.test.`)
+    share.restore()
+    // Once signed in, the new account is offered to share with the default one, and shares on a yes.
+    assert.ok(share.seen[0][0].startsWith(`${name}k is signed in as ME@client.test. Share conversations and memory with personal`), share.seen[0][0])
+    assert.deepStrictEqual(share.seen[0].slice(1), ['Share conversations and memory', 'Keep apart'])
+    assert.ok(fs.readFileSync(path.join(base, 'sync'), 'utf8').includes(`${name}k\tmemory`))
+    assert.strictEqual(fs.realpathSync(path.join(okDir, 'projects')), fs.realpathSync(path.join(tmp, 'claude-personal', 'projects')))
+    require('../../lib').writeShare({ base, sync: path.join(base, 'sync') }, `${name}k`, 'none')
     fs.rmSync(okDir, { recursive: true, force: true })
   } finally {
     input.restore()
@@ -506,7 +549,7 @@ unixCheck('add account signs in through a real terminal with the new account, an
   const info = answer('showInformationMessage', undefined)
   try {
     await vscode.commands.executeCommand('claudeMultiAccount.addAccount')
-    await until('the sign-in to end', () => info.seen.some(a => a[0] === `${name} is signed in as me@client.test.`), 15000)
+    await until('the sign-in to end', () => info.seen.some(a => a[0].startsWith(`${name} is signed in as me@client.test.`)), 15000)
     assert.deepStrictEqual(fs.readFileSync(record, 'utf8').split('\n'), ['auth login --email me@client.test', dir, ''])
   } finally {
     api.setClaude(undefined)
@@ -580,6 +623,23 @@ check('an account shares conversations and memory with the default one, then sto
     off.restore()
     info2.restore()
   }
+})
+
+check('remove account never offers the default account, ~/.claude or a folder two accounts use', async () => {
+  const accountsFile = path.join(base, 'accounts')
+  const saved = fs.readFileSync(accountsFile, 'utf8')
+  fs.appendFileSync(accountsFile, `homeclaude\t~/.claude\ntwin1\t${tmp}/claude-twin\ntwin2\t${tmp}/claude-twin\n`)
+  let items
+  const pick = answer('showQuickPick', list => { items = list; return undefined })
+  try {
+    await vscode.commands.executeCommand('claudeMultiAccount.removeAccount')
+  } finally {
+    pick.restore()
+    fs.writeFileSync(accountsFile, saved)
+  }
+  const names = items.map(i => i.label)
+  assert.ok(names.includes('acme'), names.join(', '))
+  for (const kept of ['personal', 'homeclaude', 'twin1', 'twin2']) assert.ok(!names.includes(kept), `${kept} must not be offered: ${names.join(', ')}`)
 })
 
 check('setting up the launcher without the Claude Code extension warns instead of failing', async () => {

@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.7.0
+
+- **Switching to an account that is not signed in offers the sign-in first.** A new conversation there used to ask to sign in through the default browser, which usually authorizes another Claude account. Now `Switch` says the account is not signed in and offers `Sign in` (with the link and the code) or `Switch anyway`; once signed in, it offers the new conversation.
+- **A new account is offered to share with the default one** right after it signs in: `Share conversations and memory`, or `Keep apart` for a client whose work stays separate.
+- **`Remove account` never offers the default account, `~/.claude`, or a folder two accounts use.** An accounts file written by hand could list `~/.claude` under another name, and removing it moved Claude Code's own folder to the trash. When the folder cannot go to the trash, Billable now says so instead of saying the account was removed.
+- **`/account` in a chat switches the folder the chat runs in.** It pinned the repository root, so when the workspace folder inside the repository had its own rule (as the status bar sets), the switch said "now runs on" and changed nothing (companion plugin 0.2.2).
+- **The note on where the last session stopped goes only to a new conversation after a switch** (companion plugin 0.2.2). It used to reach every new conversation in the folder for three days, on the same account too, where the earlier one is a resume away.
+- **The "chat on another account" warning goes away once that conversation is closed**, instead of staying until a new conversation starts.
+- **First run:** when no account has the companion plugin, Billable offers to install it, since the status bar shows usage only once it runs. That prompt and the launcher prompt have `Don't ask again`.
+- VS Code windows that start together no longer apply the sharing at the same time.
 
 - **Share memory between accounts, or keep them apart.** New command `Billable: Share conversations, memory and settings with the default account`, and a sharing line in the hover. Per account: nothing (the default), conversations and memory, or everything but the sign-in. Shared items become links to the default account's copy; what the account had is merged in, and anything that clashes is kept in a backup folder. Sign-ins, plans and limits stay separate.
 - **A switch no longer claims to work without the launcher.** When Claude Code tabs do not start through the Billable launcher, `Switch` used to say the folder "now runs on" the new account while new tabs kept running on the default one. It now says so and offers `Set up`, and the hover warns too.
