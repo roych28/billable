@@ -386,17 +386,38 @@ check('"Add account" in the menu runs the add-account flow', async () => {
   }
 })
 
-check('the cost report opens a monthly table per account, and exports a CSV', async () => {
+// A license that never reaches the server: Pro once `activate` was called with the right key.
+function fakeLicense(pro = false) {
+  const l = {
+    isLaunch: false,
+    checkoutUrl: 'https://example.test/buy',
+    activated: [],
+    isPro: async () => pro,
+    activate: async (key, instance) => {
+      l.activated.push({ key, instance })
+      if (key !== 'GOOD-KEY') return { ok: false, error: 'license_key not found.' }
+      pro = true
+      return { ok: true }
+    },
+  }
+  return l
+}
+
+function writeLedger(now = Date.now()) {
   const ledger = path.join(base, 'ledger')
   fs.mkdirSync(ledger, { recursive: true })
-  const now = Date.now()
   const row = (id, account, usd) =>
     fs.writeFileSync(path.join(ledger, `${id}.json`), JSON.stringify({ sessionId: id, account, email: `${account}@test`, folder: workspace, startedAt: now, updatedAt: now, usd }))
   row('r1', 'acme', 1.25)
   row('r2', 'acme', 0.75)
   row('r3', 'personal', 3)
-  const month = require('../../report').monthOf(now)
+  return require('../../report').monthOf(now)
+}
+
+check('the cost report opens a monthly table per account, and exports a CSV', async () => {
+  const month = writeLedger()
   const csvPath = path.join(tmp, `cost-${month}.csv`)
+  api.setLicense(fakeLicense(true))
   const pick = answer('showQuickPick', items => items.find(i => i.month === month))
   const info = answer('showInformationMessage', 'Export CSV')
   const save = answer('showSaveDialog', vscode.Uri.file(csvPath))
@@ -416,6 +437,46 @@ check('the cost report opens a monthly table per account, and exports a CSV', as
   const csv = fs.readFileSync(csvPath, 'utf8').trim().split('\n')
   assert.strictEqual(csv.length, 4, csv.join('\n'))
   assert.ok(csv[0].startsWith('month,account,email,folder'), csv[0])
+})
+
+check('without Pro the current month is free, the CSV export asks for a key, and the export follows the activation', async () => {
+  const month = writeLedger()
+  const csvPath = path.join(tmp, `cost-pro-${month}.csv`)
+  const license = fakeLicense(false)
+  api.setLicense(license)
+  const pick = answer('showQuickPick', items => {
+    const m = items.find(i => i.month === month)
+    assert.strictEqual(m.description, undefined, 'the current month is free without Pro')
+    return m
+  })
+  // "Export CSV" on the report, then "Enter license key" on the Pro prompt.
+  const info = answers('showInformationMessage', ['Export CSV', 'Enter license key', undefined])
+  const input = answer('showInputBox', 'GOOD-KEY')
+  const save = answer('showSaveDialog', vscode.Uri.file(csvPath))
+  try {
+    await vscode.commands.executeCommand('claudeMultiAccount.costReport')
+  } finally {
+    pick.restore()
+    info.restore()
+    input.restore()
+    save.restore()
+  }
+  assert.ok(info.seen[1][0].includes('CSV export for invoices is part of Billable Pro'), info.seen[1][0])
+  assert.deepStrictEqual(info.seen[1].slice(1), ['Get Pro', 'Enter license key'])
+  assert.strictEqual(license.activated.length, 1)
+  assert.ok(license.activated[0].instance.endsWith('(VS Code)'), license.activated[0].instance)
+  assert.ok(fs.existsSync(csvPath), 'the CSV is saved right after the activation')
+  assert.ok(info.seen.some(a => a[0] === 'Pro is active on this machine. Thank you.'), JSON.stringify(info.seen.map(a => a[0])))
+  // Now that Pro is on, entering a key again says so instead of asking for one.
+  const again = answer('showInformationMessage', undefined)
+  const input2 = answer('showInputBox', () => assert.fail('no key is asked for while Pro is active'))
+  try {
+    await vscode.commands.executeCommand('claudeMultiAccount.enterLicense')
+  } finally {
+    again.restore()
+    input2.restore()
+  }
+  assert.strictEqual(again.seen[0][0], 'Pro is already active on this machine.')
 })
 
 // Idle sessions run against fixture session files and a fake process table. The pids are above the highest pid

@@ -79,3 +79,33 @@ test('a license key unlocks Pro only when it belongs to our product, and is chec
   assert.strictEqual(await l.isPro(), false)
   assert.strictEqual(calls.filter(c => c.endsWith('validate')).length, 1)
 })
+
+test('a paid key survives an outage, a rate limit and a broken answer at the weekly check, and only "not valid" drops it', async () => {
+  const product = { storeId: 7, productId: 42, checkoutUrl: 'https://example.test/buy' }
+  let now = 0
+  let answer = () => ({ valid: true, meta: { store_id: 7, product_id: 42 } })
+  const secrets = memorySecrets()
+  const fetchImpl = async url => ({
+    json: async () => (url.endsWith('activate') ? { activated: true, instance: { id: 'i1' }, meta: { store_id: 7, product_id: 42 } } : answer()),
+  })
+  const l = createLicense({ secrets, product, fetchImpl, now: () => now })
+  assert.deepStrictEqual(await l.activate('good-key', 'mac'), { ok: true })
+  const week = 8 * 24 * 60 * 60 * 1000
+  for (const broken of [() => ({ error: 'Too many requests' }), () => ({}), () => null, () => { throw new Error('offline') }]) {
+    now += week
+    answer = broken
+    assert.strictEqual(await l.isPro(), true, 'a broken answer keeps Pro')
+    assert.ok(await secrets.get('claudeMultiAccount.license'), 'and keeps the key')
+  }
+  now += week
+  answer = () => ({ valid: false, error: 'license_key not found.' })
+  assert.strictEqual(await l.isPro(), false)
+  assert.strictEqual(await secrets.get('claudeMultiAccount.license'), undefined, '"not valid" drops the key')
+})
+
+test('the shipped PRODUCT points at the Billable Pro store and product', () => {
+  const { PRODUCT } = require('../pro')
+  assert.strictEqual(PRODUCT.storeId, 501065)
+  assert.strictEqual(PRODUCT.productId, 1450746)
+  assert.match(PRODUCT.checkoutUrl, /^https:\/\/claude-multi-account\.lemonsqueezy\.com\/checkout\/buy\//)
+})

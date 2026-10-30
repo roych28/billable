@@ -65,7 +65,8 @@ function activate(context) {
     vscode.window.showWarningMessage(`Billable could not install its launcher: ${err.message}`)
   }
   lib.pruneSessions(p)
-  const license = createLicense({ secrets: context.secrets })
+  // `license` is swapped by the integration tests, which must not reach the license server.
+  let license = createLicense({ secrets: context.secrets })
   // Replaced by the integration tests, which must not run claude.
   const plugin = { install: dir => installPlugin(p, dir) }
   // Replaced by the integration tests, which sign in with a stand-in for claude in a real terminal.
@@ -632,38 +633,61 @@ function activate(context) {
       enter,
     )
     if (answer === buy) await vscode.env.openExternal(vscode.Uri.parse(license.checkoutUrl))
-    if (answer === enter) await enterLicense()
+    // Once the key is in, the report the user asked for opens without asking again.
+    if (answer === enter) return enterLicense()
+    return false
   }
 
   async function enterLicense() {
     if (license.isLaunch) {
-      return vscode.window.showInformationMessage('Every Pro feature is free during the launch. No key is needed.')
+      vscode.window.showInformationMessage('Every Pro feature is free during the launch. No key is needed.')
+      return true
     }
-    const key = await vscode.window.showInputBox({ title: 'Billable Pro', prompt: 'Your license key', ignoreFocusOut: true })
-    if (!key) return
+    if (await license.isPro()) {
+      const again = 'Enter another key'
+      const answer = await vscode.window.showInformationMessage('Pro is already active on this machine.', again)
+      if (answer !== again) return true
+    }
+    const key = await vscode.window.showInputBox({
+      title: 'Billable Pro',
+      prompt: 'Your license key, from the receipt email',
+      placeHolder: 'XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX',
+      ignoreFocusOut: true,
+    })
+    if (!key?.trim()) return false
     try {
       const r = await license.activate(key, `${os.hostname()} (VS Code)`)
-      if (r.ok) vscode.window.showInformationMessage('Pro is active on this machine. Thank you.')
-      else vscode.window.showErrorMessage(`License not activated: ${r.error}`)
+      if (r.ok) {
+        vscode.window.showInformationMessage('Pro is active on this machine. Thank you.')
+        return true
+      }
+      vscode.window.showErrorMessage(`License not activated: ${r.error}`)
     } catch (err) {
       vscode.window.showErrorMessage(`Could not reach the license server: ${err.message}`)
     }
+    return false
   }
 
-  async function costReport() {
+  async function costReport(month) {
     const entries = report.readLedger(p.ledger)
     const free = report.freeMonths()
     const pro = await license.isPro()
-    const pick = await vscode.window.showQuickPick(
-      report.months(entries).map(m => ({
-        label: m,
-        description: pro || free.includes(m) ? undefined : '$(lock) Pro',
-        month: m,
-      })),
-      { title: 'Claude cost by account', placeHolder: 'Pick a month' },
-    )
+    const pick =
+      month !== undefined
+        ? { month }
+        : await vscode.window.showQuickPick(
+            report.months(entries).map(m => ({
+              label: m,
+              description: pro || free.includes(m) ? undefined : '$(lock) Pro',
+              month: m,
+            })),
+            { title: 'Claude cost by account', placeHolder: 'Pick a month' },
+          )
     if (!pick) return
-    if (!pro && !free.includes(pick.month)) return askForPro('The full history')
+    if (!pro && !free.includes(pick.month)) {
+      if (await askForPro('The full history')) return costReport(pick.month)
+      return
+    }
 
     const doc = await vscode.workspace.openTextDocument({
       language: 'markdown',
@@ -674,7 +698,7 @@ function activate(context) {
     const exportCsv = 'Export CSV'
     const answer = await vscode.window.showInformationMessage(`Claude cost by account for ${pick.month}.`, exportCsv)
     if (answer !== exportCsv) return
-    if (!(await license.isPro())) return askForPro('CSV export for invoices')
+    if (!(await license.isPro()) && !(await askForPro('CSV export for invoices'))) return
     const target = await vscode.window.showSaveDialog({
       defaultUri: vscode.Uri.file(path.join(os.homedir(), `claude-cost-${pick.month}.csv`)),
       filters: { CSV: ['csv'] },
@@ -811,6 +835,7 @@ function activate(context) {
     pluginHealed: () => healed,
     setPluginInstaller: install => (plugin.install = install),
     setClaude: file => (login.claude = file ? () => file : claudePath),
+    setLicense: l => (license = l),
   }
 }
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.0
+
+- **Billable Pro is on.** The cost report's full history (beyond the current and the previous month) and the CSV export now take a license key: `Get Pro` opens the checkout, `Billable: Enter license key` activates a key on this machine (up to three machines per key), and the report the user asked for opens right after. The key is checked again once a week.
+- A paid key is never dropped by an outage, a rate limit or a broken answer from the license server at the weekly check; only the server saying the key is not valid does that.
+- `Billable: Enter license key` says when Pro is already active on this machine, and ignores a blank key.
+
 ## 0.7.0
 
 - **Switching to an account that is not signed in offers the sign-in first.** A new conversation there used to ask to sign in through the default browser, which usually authorizes another Claude account. Now `Switch` says the account is not signed in and offers `Sign in` (with the link and the code) or `Switch anyway`; once signed in, it offers the new conversation.
