@@ -91,7 +91,7 @@
       },
       {
         "command": "claudeMultiAccount.enterLicense",
-        "title": "Enter Pro license key",
+        "title": "Enter license key",
         "category": "Billable"
       }
     ],
