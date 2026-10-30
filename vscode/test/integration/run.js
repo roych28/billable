@@ -19,12 +19,17 @@ async function main() {
   }
   fs.writeFileSync(path.join(base, 'accounts'), `personal\t${tmp}/claude-personal\nacme\t${tmp}/claude-acme\n`)
   fs.writeFileSync(path.join(base, 'folders'), `*\tpersonal\n${path.dirname(workspace)}\tacme\n`)
+  // A claude on PATH, as on a machine with Claude Code: the sign-in checks it is there before it opens a terminal.
+  // The checks replace the terminal (or the binary) before anything would run it.
+  const bin = path.join(tmp, 'bin')
+  fs.mkdirSync(bin)
+  for (const name of ['claude', 'claude.exe']) fs.writeFileSync(path.join(bin, name), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
 
   await runTests({
     extensionDevelopmentPath: path.resolve(__dirname, '../..'),
     extensionTestsPath: path.resolve(__dirname, 'suite.js'),
     launchArgs: [workspace, '--disable-extensions', '--user-data-dir', path.join(tmp, 'user-data')],
-    extensionTestsEnv: { CLAUDE_MULTI_ACCOUNT_HOME: base, CMA_TEST_ROOT: tmp },
+    extensionTestsEnv: { CLAUDE_MULTI_ACCOUNT_HOME: base, CMA_TEST_ROOT: tmp, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}` },
   })
 }
 
