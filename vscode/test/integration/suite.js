@@ -214,11 +214,13 @@ const signedInAs = (dir, email) => fs.writeFileSync(path.join(dir, '.claude.json
 
 // claude itself, never a shell: a claude() wrapper in the shell profile would sign in the folder's account instead.
 function assertLogin(t, dir, args) {
+  const lib = require('../../lib')
   const ext = vscode.extensions.getExtension('anthropic.claude-code')
-  assert.strictEqual(t.options.shellPath, require('../../lib').claudeBinary(ext?.extensionPath))
+  assert.strictEqual(t.options.shellPath, lib.claudeBinary(ext?.extensionPath))
   assert.deepStrictEqual(t.options.shellArgs, args)
-  assert.strictEqual(t.options.env.CLAUDE_CONFIG_DIR, dir)
-  assert.strictEqual(t.options.env.BROWSER, '/usr/bin/true', 'the sign-in prints a link and waits for a code')
+  assert.strictEqual(lib.pathKey(t.options.env.CLAUDE_CONFIG_DIR), lib.pathKey(dir))
+  // Windows has no do-nothing command to point $BROWSER at, so there the sign-in opens the browser.
+  assert.strictEqual(t.options.env.BROWSER, lib.noBrowserEnv().BROWSER, 'the sign-in prints a link and waits for a code')
   assert.deepStrictEqual(t.sent, [], 'nothing is typed into a shell')
 }
 
