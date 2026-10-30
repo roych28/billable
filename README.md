@@ -6,9 +6,9 @@ Claude Code accounts and cost per client: run every project on the right Claude 
 
 Freelancers and consultants often hold a Claude account per client, plus a personal one. Claude Code signs in once per config directory, so it is easy to spend a client's quota on your own project, or lose track of what a session costs. Billable puts the account, the usage and the switch where you can see them.
 
-![Switching a folder's Claude account from the status bar, then the cost report by account](https://github.com/roych28/claude-multi-account/raw/HEAD/docs/demo.gif)
+![Switching a folder's Claude account from the status bar, then the cost report by account](https://github.com/roych28/billable/raw/HEAD/docs/demo.gif)
 
-![Status bar](https://github.com/roych28/claude-multi-account/raw/HEAD/docs/status-bar.png)
+![Status bar](https://github.com/roych28/billable/raw/HEAD/docs/status-bar.png)
 
 ## Features
 
@@ -133,7 +133,7 @@ Everything stays on your machine. The extension reads Claude Code's local config
 
 ## Support
 
-Found a bug or want a feature? [Open an issue](https://github.com/roych28/claude-multi-account/issues). If the extension saves you time, you can [sponsor its development](https://github.com/sponsors/roych28).
+Found a bug or want a feature? [Open an issue](https://github.com/roych28/billable/issues). If the extension saves you time, you can [sponsor its development](https://github.com/sponsors/roych28).
 
 ## License
 

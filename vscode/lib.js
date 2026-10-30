@@ -404,7 +404,8 @@ function claudeBinary(claudeCodePath, platform = process.platform) {
 function isInside(dir, root, platform = process.platform) {
   const d = pathKey(dir, platform)
   const r = pathKey(root, platform)
-  return d === r || d.startsWith(r + '/')
+  // A root written as `/` reaches here empty; on Windows it is the drive root and holds everything too.
+  return r === '' || d === r || d.startsWith(r + '/')
 }
 
 function latestStatus(p, roots, account) {

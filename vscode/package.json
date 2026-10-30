@@ -8,12 +8,12 @@
   "icon": "icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/roych28/claude-multi-account"
+    "url": "https://github.com/roych28/billable"
   },
   "bugs": {
-    "url": "https://github.com/roych28/claude-multi-account/issues"
+    "url": "https://github.com/roych28/billable/issues"
   },
-  "homepage": "https://github.com/roych28/claude-multi-account#readme",
+  "homepage": "https://github.com/roych28/billable#readme",
   "categories": [
     "Other"
   ],
