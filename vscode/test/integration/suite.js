@@ -366,6 +366,24 @@ check('the menu offers "Use default" only for a folder with its own rule, and it
   assert.ok(items.some(i => i.name === '+add'), 'Add account stays in the menu')
 })
 
+check('when claude is not found, the sign-in says so and gives no instructions for a terminal that never opened', async () => {
+  api.setClaude(path.join(tmp, 'no-such-claude'))
+  const term = fakeTerminal()
+  const err = answer('showErrorMessage', undefined)
+  const info = answer('showInformationMessage', undefined)
+  try {
+    await vscode.commands.executeCommand('claudeMultiAccount.signIn', 'acme')
+  } finally {
+    api.setClaude(undefined)
+    term.restore()
+    err.restore()
+    info.restore()
+  }
+  assert.strictEqual(term.made.length, 0, 'no terminal')
+  assert.match(err.seen[0]?.[0] ?? '', /Claude Code was not found/)
+  assert.strictEqual(info.seen.length, 0, JSON.stringify(info.seen))
+})
+
 check('"Add account" in the menu runs the add-account flow', async () => {
   const name = `cmatest${Date.now().toString(36)}m`
   const dir = path.join(os.homedir(), `.claude-${name}`)

@@ -59,12 +59,13 @@ func resolveDir(base, home, dir string) string {
 	if accounts == nil || rules == nil {
 		return ""
 	}
-	name := accountFor(dir, rules, home)
-	if name == "" {
-		if real, err := filepath.EvalSymlinks(dir); err == nil && real != dir {
-			name = accountFor(real, rules, home)
-		}
+	// A folder opened through a link: the rule of its own path or of its real path, whichever is more specific,
+	// so a "*" rule never hides the real path's rule.
+	dirs := []string{dir}
+	if real, err := filepath.EvalSymlinks(dir); err == nil && real != dir {
+		dirs = append(dirs, real)
 	}
+	name := accountForAny(dirs, rules, home)
 	for _, a := range accounts {
 		if a[0] == name {
 			return expand(a[1], home)
@@ -149,7 +150,11 @@ func key(p string) string {
 
 // accountFor returns the account of the longest folder rule that contains dir, else the "*" rule.
 func accountFor(dir string, rules [][2]string, home string) string {
-	d := key(dir)
+	return accountForAny([]string{dir}, rules, home)
+}
+
+// accountForAny is accountFor over several spellings of one folder: the longest rule containing any of them.
+func accountForAny(dirs []string, rules [][2]string, home string) string {
 	best, bestLen := "", -1
 	for _, r := range rules {
 		if r[0] == "*" {
@@ -159,8 +164,11 @@ func accountFor(dir string, rules [][2]string, home string) string {
 			continue
 		}
 		p := key(expand(r[0], home))
-		if (d == p || strings.HasPrefix(d, p+"/")) && len(p) > bestLen {
-			best, bestLen = r[1], len(p)
+		for _, dir := range dirs {
+			d := key(dir)
+			if (d == p || strings.HasPrefix(d, p+"/")) && len(p) > bestLen {
+				best, bestLen = r[1], len(p)
+			}
 		}
 	}
 	return best

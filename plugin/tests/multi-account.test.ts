@@ -2,12 +2,15 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On, RenderElement } from 'claude-code'
 
-import { accountFor, pinTarget } from '../hooks/register'
+import { accountFor, expand, pinTarget, resolveBase } from '../hooks/register'
 
 const HOME = '/Users/tester'
 const CWD = `${HOME}/code/app`
 const BASE = `${HOME}/.claude-multi-account`
 const HANDOFF = `${BASE}/handoff/-Users-tester-code-app.json`
+
+// Every argument hint /account was registered with, across the tests.
+const hints: string[] = []
 
 const ACCOUNTS = [
   'personal\t~/.claude',
@@ -51,9 +54,13 @@ function world(
       cost: { usd: 1.5 },
     },
   }))
-  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  on('command.register', ($, e) => {
+    hints.push(String(e.argumentHint))
+    return { value: { command: e.name } }
+  })
   on('model.fork', () => ({ value: { isAnswered: false, reason: 'nothing-to-fork' } }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('turn.complete', ($, e) => ({ text: e.answer }))
   return clock
 }
 
@@ -294,4 +301,92 @@ test('Windows paths match their folder rules whatever the case and slashes', () 
   expect(accountFor('C:/Work/Acme', rules)).toBe('acme')
   expect(accountFor('C:\\Work\\Acme-other', rules)).toBe('personal')
   expect(accountFor('/work/Acme/app', [{ path: '/work/acme', account: 'acme' }])).toBe(null)
+})
+
+// ---- Findings of the 30.10.2026 second audit ----
+
+test('a note written at a switch is not replaced by another session still at work in the folder', async ($, on) => {
+  const files = { ...signedIn() }
+  const note = { sessionId: 'switcher', account: 'personal', at: 1_000_000 - 60_000, transcript: 'x', lastRequest: 'a', lastAnswer: 'b', summary: 'the plan' }
+  files[HANDOFF] = JSON.stringify(note)
+  world(on, files, 'bystander', [], { CLAUDE_CONFIG_DIR: `${HOME}/.claude` })
+  await start($)
+  await $.turn.complete({ answer: 'done' } as never)
+  expect(JSON.parse(files[HANDOFF]!).summary).toBe('the plan')
+  expect(JSON.parse(files[HANDOFF]!).sessionId).toBe('switcher')
+})
+
+test('the session a note was written for replaces it after its first turn, so the note reaches one session only', async ($, on) => {
+  const seen: (readonly string[] | undefined)[] = []
+  const files = { ...signedIn() }
+  const note = { sessionId: 'switcher', account: 'personal', at: 1_000_000 - 60_000, transcript: 'x', lastRequest: 'a', lastAnswer: 'b', summary: 'the plan' }
+  files[HANDOFF] = JSON.stringify(note)
+  world(on, files, 'fresh-on-acme', seen)
+  await start($)
+  await $.prompt.submit({ text: 'continue', wait: false, origin: { kind: 'composer' } })
+  expect(seen[0]?.join('\n')).toContain('the plan')
+  await $.turn.complete({ answer: 'done' } as never)
+  expect(JSON.parse(files[HANDOFF]!).sessionId).toBe('fresh-on-acme')
+})
+
+test('a note is kept per working folder, so a sibling folder of the same repository on another account gets none', async ($, on) => {
+  const seen: (readonly string[] | undefined)[] = []
+  const files = { ...signedIn() }
+  // A note of the repository root, not of this folder.
+  files[`${BASE}/handoff/-Users-tester-code.json`] = JSON.stringify({ sessionId: 'other', account: 'personal', at: 1_000_000, transcript: 'x', lastRequest: 'a', lastAnswer: 'b' })
+  world(on, files, 's-sib', seen, {}, `${HOME}/code`)
+  await start($)
+  await $.prompt.submit({ text: 'hi', wait: false, origin: { kind: 'composer' } })
+  expect(seen[0]).toBeUndefined()
+})
+
+test('the plugin reads the accounts file like the launchers: ~\\ paths, a BOM, CRLF, and a name listed twice', async ($, on) => {
+  const files: Record<string, string> = {
+    [`${BASE}/accounts`]: '\uFEFFpersonal\t~/.claude\r\nacme\t~\\.claude-acme\r\nacme\t~/.claude-second\r\n',
+    [`${HOME}/.claude-acme/.claude.json`]: JSON.stringify({ oauthAccount: { emailAddress: 'me@acme.test' } }),
+  }
+  world(on, files, 's-win')
+  await start($)
+  const status = JSON.parse(files[`${BASE}/sessions/s-win.json`]!)
+  expect(status.account).toEqual({ name: 'acme', email: 'me@acme.test' })
+})
+
+test('a relative CLAUDE_MULTI_ACCOUNT_HOME is taken from the home folder', async () => {
+  expect(resolveBase('cma-home', '/Users/t')).toBe('/Users/t/cma-home')
+  expect(resolveBase('/abs/base', '/Users/t')).toBe('/abs/base')
+  expect(resolveBase('C:\\cma', 'C:\\Users\\t')).toBe('C:\\cma')
+  expect(resolveBase(undefined, '/Users/t')).toBe('/Users/t/.claude-multi-account')
+  expect(expand('~\\.claude-acme', 'C:\\Users\\t')).toBe('C:\\Users\\t/.claude-acme')
+})
+
+test('once this session\'s account is removed, the chat line says where new conversations go', async ($, on) => {
+  const statuses: (string | undefined)[] = []
+  on('ui.status', ($, e) => {
+    statuses.push(e.text)
+    return { value: undefined }
+  })
+  const files = signedIn()
+  files[`${BASE}/folders`] = `${CWD}\tacme\n`
+  const clock = world(on, files, 's-rm', [], { CLAUDE_CODE_ENTRYPOINT: 'claude-vscode' })
+  await start($)
+  expect(statuses.at(-1)).toBe('Claude account: acme (me@acme.test)')
+  // Remove account drops the acme line and every rule that ran on it.
+  files[`${BASE}/accounts`] = 'personal\t~/.claude\nglobex\t~/.claude-globex\n'
+  files[`${BASE}/folders`] = ''
+  await clock.advance(5_000)
+  expect(statuses.at(-1)).toBe('Claude account: acme (me@acme.test). New conversations in this folder run on personal.')
+})
+
+test('/account offers an account added after the session started', async ($, on) => {
+  hints.length = 0
+  const files = signedIn()
+  const clock = world(on, files, 's-hint')
+  await start($)
+  expect(hints.at(-1)).toBe('[personal|acme|globex|auto]')
+  files[`${BASE}/accounts`] = `${ACCOUNTS}\ninitech\t~/.claude-initech\n`
+  await clock.advance(5_000)
+  expect(hints.at(-1)).toBe('[personal|acme|globex|initech|auto]')
+  const count = hints.length
+  await clock.advance(5_000)
+  expect(hints.length).toBe(count)
 })

@@ -8,7 +8,8 @@ const lib = require('../lib')
 
 function sandbox() {
   const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cma-')))
-  return lib.paths(home)
+  // Not the environment this runs in: a CLAUDE_MULTI_ACCOUNT_HOME or CLAUDE_CONFIG_DIR there must not leak in.
+  return lib.paths(home, {})
 }
 
 function assistant(id, input, output, cacheRead, cacheWrite) {
@@ -650,9 +651,98 @@ test('a folder without a rule shows the account on ~/.claude, which is where the
   fs.mkdirSync(p.base, { recursive: true })
   fs.writeFileSync(p.accounts, 'acme\t~/.claude-acme\nhome\t~/.claude\n')
   fs.writeFileSync(p.folders, '/w/app\tacme\n')
-  assert.strictEqual(lib.folderView(p, ['/elsewhere']).currentName, 'home')
+  assert.strictEqual(lib.folderView(p, ['/elsewhere'], {}).currentName, 'home')
+  // Without an account on ~/.claude, that is still where the tab runs: never the first account of the file.
   fs.writeFileSync(p.accounts, 'acme\t~/.claude-acme\n')
-  assert.strictEqual(lib.folderView(p, ['/elsewhere']).currentName, 'acme', 'without an account on ~/.claude, the first one is all there is to show')
+  const v = lib.folderView(p, ['/elsewhere'], {})
+  assert.strictEqual(v.currentName, '~/.claude')
+  assert.strictEqual(v.listed, false)
+  // VS Code started with CLAUDE_CONFIG_DIR: the launcher leaves it, so the tab runs there.
+  assert.strictEqual(lib.folderView(p, ['/elsewhere'], { CLAUDE_CONFIG_DIR: '~/.claude-acme' }).currentName, 'acme')
+  assert.strictEqual(lib.folderView(p, ['/elsewhere'], { CLAUDE_CONFIG_DIR: '/x/other' }).currentName, '/x/other')
+  // A rule naming an account that does not exist changes nothing in the launcher, so it shows ~/.claude too.
+  fs.writeFileSync(p.folders, '/w/app\tghost\n')
+  assert.strictEqual(lib.folderView(p, ['/w/app'], {}).currentName, '~/.claude')
+})
+
+test('Use default drops the folder\'s own rule, and its real path\'s when opened through a link', { skip: process.platform === 'win32' }, () => {
+  const p = sandbox()
+  const real = path.join(p.home, 'real', 'app')
+  const link = path.join(p.home, 'link')
+  fs.mkdirSync(real, { recursive: true })
+  fs.symlinkSync(path.join(p.home, 'real'), link)
+  fs.mkdirSync(p.base, { recursive: true })
+  fs.writeFileSync(p.accounts, 'default\t~/.claude\nwork\t~/.claude-work\n')
+  fs.writeFileSync(p.folders, `*\tdefault\n${real}\twork\n`)
+  const viaLink = path.join(link, 'app')
+  assert.strictEqual(lib.folderView(p, [viaLink], {}).currentName, 'work')
+  assert.strictEqual(lib.useDefaultTarget(p, viaLink, {}), 'default', 'offered through the link too')
+  lib.unpin(p, viaLink)
+  assert.strictEqual(lib.folderView(p, [viaLink], {}).currentName, 'default')
+  assert.strictEqual(lib.useDefaultTarget(p, viaLink, {}), null, 'no rule of its own left')
+  assert.strictEqual(fs.readFileSync(p.folders, 'utf8'), '*\tdefault\n')
+})
+
+test('a status of a removed account never shows as an open chat', () => {
+  const p = sandbox()
+  fs.mkdirSync(p.sessions, { recursive: true })
+  fs.writeFileSync(p.accounts, 'default\t~/.claude\nwork\t~/.claude-work\n')
+  fs.writeFileSync(path.join(p.sessions, 's.json'), JSON.stringify({ sessionId: 's', cwd: '/w/app', account: { name: 'work', email: 'w@x.test' }, updatedAt: 1 }))
+  fs.writeFileSync(p.accounts, 'default\t~/.claude\n')
+  assert.strictEqual(lib.folderView(p, ['/w/app'], {}).openOn, null)
+})
+
+test('addAccount writes the line only once the folder exists, and keeps the comments of a file with no account yet', () => {
+  const p = sandbox()
+  fs.mkdirSync(p.base, { recursive: true })
+  fs.writeFileSync(p.accounts, '# my accounts\n')
+  fs.writeFileSync(path.join(p.home, '.claude-foo'), 'a file where the folder would go')
+  assert.throws(() => lib.addAccount(p, 'foo', '~/.claude-foo'))
+  assert.strictEqual(fs.readFileSync(p.accounts, 'utf8'), '# my accounts\n', 'nothing recorded for an account without a folder')
+  lib.addAccount(p, 'bar', '~/.claude-bar')
+  assert.strictEqual(fs.readFileSync(p.accounts, 'utf8'), 'default\t~/.claude\n# my accounts\nbar\t~/.claude-bar\n')
+  assert.ok(fs.statSync(path.join(p.home, '.claude-bar')).isDirectory())
+  assert.throws(() => lib.addAccount(p, 'bar', '~/.claude-bar'), /already exists/)
+})
+
+test('edits from two windows keep both lines: one waits for the other\'s lock, then adds its own', async () => {
+  const p = sandbox()
+  fs.mkdirSync(p.base, { recursive: true })
+  lib.pin(p, '/w/first', 'acme')
+  // This window holds the lock; another window pins two folders meanwhile.
+  const release = lib.acquireLock(path.join(p.base, 'config.lock'))
+  const other = require('child_process').spawn(process.execPath, ['-e', `
+    const lib = require(${JSON.stringify(path.join(__dirname, '..', 'lib.js'))})
+    const p = lib.paths(${JSON.stringify(p.home)}, {})
+    lib.pin(p, '/w/one', 'acme')
+    lib.pin(p, '/w/two', 'acme')
+  `])
+  let stderr = ''
+  other.stderr.on('data', d => (stderr += d))
+  await new Promise(r => setTimeout(r, 300))
+  assert.strictEqual(fs.readFileSync(p.folders, 'utf8'), '/w/first\tacme\n', 'nothing written while the lock is held')
+  release()
+  const code = await new Promise(r => other.on('exit', r))
+  assert.strictEqual(code, 0, stderr)
+  assert.strictEqual(fs.readFileSync(p.folders, 'utf8'), '/w/first\tacme\n/w/one\tacme\n/w/two\tacme\n')
+})
+
+test('an edit gives up with a clear message when another window keeps the lock', () => {
+  const p = sandbox()
+  fs.mkdirSync(p.base, { recursive: true })
+  const release = lib.acquireLock(path.join(p.base, 'config.lock'))
+  try {
+    assert.throws(() => lib.pin(p, '/w/x', 'acme'), /Another VS Code window is changing the Billable settings/)
+  } finally {
+    release()
+  }
+  assert.ok(!fs.existsSync(p.folders))
+})
+
+test('a relative CLAUDE_MULTI_ACCOUNT_HOME is taken from the home folder', () => {
+  assert.strictEqual(lib.paths('/home/t', { CLAUDE_MULTI_ACCOUNT_HOME: 'cma-home' }).base, path.resolve('/home/t', 'cma-home'))
+  assert.strictEqual(lib.paths('/home/t', { CLAUDE_MULTI_ACCOUNT_HOME: '/abs/base' }).base, path.resolve('/abs/base'))
+  assert.strictEqual(lib.paths('/home/t', {}).base, path.join('/home/t', '.claude-multi-account'))
 })
 
 test('sharing refuses an account whose folder is, or links to, the default account\'s folder', { skip: process.platform === 'win32' }, () => {

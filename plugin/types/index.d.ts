@@ -20,6 +20,8 @@ declare module 'claude-code' {
       next: string | null
       handoff: string | null
       run: { startedAt: number; startUsd: number } | null
+      consumed: string | null
+      hinted: string | null
     }
   }
 }

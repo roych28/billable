@@ -8,6 +8,10 @@ const usage = atom({ plugin: 'multi-account', key: 'usage' } as const, { limits:
 const nextAccount = atom({ plugin: 'multi-account', key: 'next' } as const, null)
 const handoff = atom({ plugin: 'multi-account', key: 'handoff' } as const, null)
 const run = atom({ plugin: 'multi-account', key: 'run' } as const, null)
+// The session whose handoff note this one started from: once read, the note is this session's to replace.
+const consumed = atom({ plugin: 'multi-account', key: 'consumed' } as const, null)
+// The account names /account was registered with, so an account added later reaches its hint.
+const hinted = atom({ plugin: 'multi-account', key: 'hinted' } as const, null)
 
 const HANDOFF_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000
 // How often the folder's rule and the other accounts are read again: both change outside this session.
@@ -31,18 +35,28 @@ async function home($: EngineInterface): Promise<string> {
   return (await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || ''
 }
 
-async function base($: EngineInterface): Promise<string> {
-  return (await $.env.get('CLAUDE_MULTI_ACCOUNT_HOME')) || `${await home($)}/.claude-multi-account`
+// A relative CLAUDE_MULTI_ACCOUNT_HOME is taken from the home folder, as the extension and the launchers take it:
+// each runs in another working folder, and they must all read the same files.
+export function resolveBase(value: string | undefined, h: string): string {
+  if (!value) return `${h}/.claude-multi-account`
+  return /^([a-zA-Z]:)?[\\/]/.test(value) ? value : `${h}/${value}`
 }
 
-function expand(p: string, h: string): string {
-  return (p === '~' || p.startsWith('~/') ? h + p.slice(1) : p).replace(/\/+$/, '')
+async function base($: EngineInterface): Promise<string> {
+  return resolveBase(await $.env.get('CLAUDE_MULTI_ACCOUNT_HOME'), await home($))
+}
+
+// ~, ~/x and, for files written on Windows, ~\x.
+export function expand(p: string, h: string): string {
+  const full = p === '~' ? h : p.startsWith('~/') || p.startsWith('~\\') ? `${h}/${p.slice(2)}` : p
+  return full.replace(/[\\/]+$/, '')
 }
 
 async function readLines($: EngineInterface, path: string): Promise<string[][]> {
   try {
     return (await $.fs.read(path))
-      .split('\n')
+      .replace(/^\uFEFF/, '')
+      .split(/\r?\n/)
       .map(l => l.trim())
       .filter(l => l !== '' && !l.startsWith('#'))
       .map(l => l.split('\t').map(f => f.trim()))
@@ -64,7 +78,11 @@ async function emailOf($: EngineInterface, dir: string, h: string): Promise<stri
 async function accounts($: EngineInterface): Promise<ClaudeMultiAccountAccount[]> {
   const h = await home($)
   const rows = await readLines($, `${await base($)}/accounts`)
-  const list = rows.filter(r => r[0] && r[1]).map(r => ({ name: r[0]!, dir: expand(r[1]!, h) }))
+  // A name listed twice keeps its first line, as in the extension and the launchers.
+  const seen = new Set<string>()
+  const list = rows
+    .filter(r => r[0] && r[1] && !seen.has(r[0]) && seen.add(r[0]))
+    .map(r => ({ name: r[0]!, dir: expand(r[1]!, h) }))
   const all = list.length > 0 ? list : [{ name: 'default', dir: `${h}/.claude` }]
   const out: ClaudeMultiAccountAccount[] = []
   for (const a of all) out.push({ ...a, email: await emailOf($, a.dir, h) })
@@ -159,6 +177,7 @@ async function handoffPath($: EngineInterface, folder: string): Promise<string> 
   return `${await base($)}/handoff/${keyOf(folder)}.json`
 }
 
+// One note per working folder, not per repository: two folders of one repository can run on two accounts.
 async function readHandoff($: EngineInterface, folder: string): Promise<Handoff | null> {
   try {
     return JSON.parse(await $.fs.read(await handoffPath($, folder))) as Handoff
@@ -174,18 +193,29 @@ async function writeHandoff($: EngineInterface, summary?: string): Promise<void>
   const messages = await $.session.messages()
   const lastRequest = [...messages].reverse().find(m => m.role === 'user' && m.text.trim() !== '')
   const lastAnswer = [...messages].reverse().find(m => m.role === 'assistant' && m.text.trim() !== '')
-  const previous = await readHandoff($, i.folder)
+  const cwd = await $.session.cwd()
+  const previous = await readHandoff($, cwd)
+  // A note written at a switch by another session waits for the new session it was written for; another session
+  // still at work in this folder on the old account must not replace it with its own last turn.
+  const now = await $.clock.now()
+  const waiting =
+    summary === undefined &&
+    previous?.summary !== undefined &&
+    previous.sessionId !== sessionId &&
+    previous.sessionId !== (await read($, consumed)) &&
+    now - previous.at < HANDOFF_MAX_AGE_MS
+  if (waiting) return
   const keptSummary = summary ?? (previous?.sessionId === sessionId ? previous.summary : undefined)
   const note: Handoff = {
     sessionId,
     account: i.current.name,
-    at: await $.clock.now(),
+    at: now,
     transcript: i.transcript,
     lastRequest: clip(lastRequest?.text ?? '', 2000),
     lastAnswer: clip(lastAnswer?.text ?? '', 3000),
     ...(keptSummary ? { summary: keptSummary } : {}),
   }
-  await $.fs.write(await handoffPath($, i.folder), JSON.stringify(note, null, 2))
+  await $.fs.write(await handoffPath($, cwd), JSON.stringify(note, null, 2))
 }
 
 async function writeStatus($: EngineInterface): Promise<void> {
@@ -324,11 +354,29 @@ async function refresh($: EngineInterface): Promise<void> {
   const i = await read($, info)
   if (!i) return
   const list = await accounts($)
-  const current = list.find(a => pathKey(a.dir) === pathKey(i.current.dir)) ?? i.current
+  const listed = list.find(a => pathKey(a.dir) === pathKey(i.current.dir))
+  const current = listed ?? i.current
   const others = list.filter(a => pathKey(a.dir) !== pathKey(current.dir) && a.email !== NOT_SIGNED_IN)
   await update($, info, () => ({ ...i, current, others }))
   const ruled = accountFor(await $.session.cwd(), await rules($))
-  await update($, nextAccount, () => ruled)
+  // This session's account was removed, and its rules with it: new conversations here go back to ~/.claude.
+  const h = await home($)
+  const fallback = listed ? null : (list.find(a => pathKey(a.dir) === pathKey(`${h}/.claude`))?.name ?? 'the default account')
+  await update($, nextAccount, () => ruled ?? fallback)
+  await registerAccountCommand($, list.map(a => a.name))
+}
+
+async function registerAccountCommand($: EngineInterface, names: string[]): Promise<void> {
+  const hint = `[${[...names, 'auto'].join('|')}]`
+  if ((await read($, hinted)) === hint) return
+  try {
+    await $.command.register({
+      name: 'account',
+      description: 'Show the Claude account, cost and limits; /account <name> switches this folder',
+      argumentHint: hint,
+    })
+    await update($, hinted, () => hint)
+  } catch {}
 }
 
 let timer: Timer | undefined
@@ -364,21 +412,19 @@ export const register: Register = on => {
     const startedAt = await $.clock.now()
     await update($, run, () => ({ startedAt, startUsd: now.cost?.usd ?? 0 }))
 
-    const names = (await accounts($)).map(a => a.name)
-    await $.command.register({
-      name: 'account',
-      description: 'Show the Claude account, cost and limits; /account <name> switches this folder',
-      argumentHint: `[${[...names, 'auto'].join('|')}]`,
-    })
+    await update($, hinted, () => null)
+    await registerAccountCommand($, (await accounts($)).map(a => a.name))
 
     const isFresh = (await $.session.messages()).length === 0
-    const note = await readHandoff($, loaded.folder)
+    const note = await readHandoff($, e.cwd)
     const sessionId = await $.session.id()
     const isRecent = note !== null && (await $.clock.now()) - note.at < HANDOFF_MAX_AGE_MS
     // Only across a switch: on the same account a new conversation is a fresh start, and the old one is a resume away.
     const isSwitch = note !== null && note.account !== loaded.current.name
+    await update($, consumed, () => null)
     if (isFresh && note && isRecent && isSwitch && note.sessionId !== sessionId) {
       await update($, handoff, () => handoffPrompt(note))
+      await update($, consumed, () => note.sessionId)
     }
     await writeStatus($)
 

@@ -1,6 +1,6 @@
 {
   "name": "multi-account",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Run each project on its own Claude account: shows the account, cost and limits above the prompt, switches the account per folder, and hands the next session where the last one stopped.",
   "author": { "name": "Roy Chemo", "url": "https://github.com/roych28" },
   "homepage": "https://github.com/roych28/billable",

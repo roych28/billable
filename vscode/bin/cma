@@ -6,7 +6,8 @@ BASE="${CLAUDE_MULTI_ACCOUNT_HOME:-$HOME/.claude-multi-account}"
 
 resolve() {
   [ -f "$BASE/accounts" ] && [ -f "$BASE/folders" ] || return 0
-  awk -F'\t' -v dir="$1" -v home="$HOME" '
+  # Bytes, not characters, in every awk (gawk counts a BOM as one character in a UTF-8 locale).
+  LC_ALL=C awk -F'\t' -v dir="$1" -v real="$2" -v home="$HOME" '
     function expand(p) {
       if (p == "~") p = home
       else if (substr(p, 1, 2) == "~/") p = home substr(p, 2)
@@ -20,7 +21,8 @@ resolve() {
     {
       if ($1 == "*") { if (best == "") { best = "*"; name = $2 }; next }
       p = expand($1)
-      if (dir == p || index(dir, p "/") == 1)
+      # The folder as reached, or its real path when it was opened through a link: the longer rule wins.
+      if (dir == p || index(dir, p "/") == 1 || (real != "" && (real == p || index(real, p "/") == 1)))
         if (best == "" || best == "*" || length(p) > length(best)) { best = p; name = $2 }
     }
     END { if (name in acc) print acc[name] }
@@ -29,12 +31,12 @@ resolve() {
 
 case "$1" in
   dir)
-    resolve "${2:-$PWD}"
+    d="${2:-$PWD}"
+    resolve "$d" "$(cd "$d" 2>/dev/null && pwd -P)"
     ;;
   exec)
     shift
-    d=$(resolve "$PWD")
-    [ -n "$d" ] || d=$(resolve "$(pwd -P)")
+    d=$(resolve "$PWD" "$(pwd -P)")
     if [ "$d" = "$HOME/.claude" ]; then
       unset CLAUDE_CONFIG_DIR
     elif [ -n "$d" ]; then

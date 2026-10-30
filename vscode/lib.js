@@ -4,8 +4,11 @@ const path = require('path')
 
 const NOT_SIGNED_IN = 'not signed in'
 
-function paths(home = os.homedir()) {
-  const base = process.env.CLAUDE_MULTI_ACCOUNT_HOME || path.join(home, '.claude-multi-account')
+function paths(home = os.homedir(), env = process.env) {
+  // A relative CLAUDE_MULTI_ACCOUNT_HOME is taken from the home folder, in the launchers and the plugin too: each runs
+  // in another working folder, and they must all read the same files.
+  const set = env.CLAUDE_MULTI_ACCOUNT_HOME
+  const base = set ? path.resolve(home, set) : path.join(home, '.claude-multi-account')
   return {
     home,
     base,
@@ -71,8 +74,10 @@ function pathKey(p, platform = process.platform) {
   return platform === 'win32' ? k.toLowerCase() : k
 }
 
+// The account of the longest rule containing the folder, else the "*" rule. `folder` may be a list of spellings of one
+// folder (its path and its real path): the longest rule containing any of them wins, as in the launchers.
 function accountFor(folder, rules, platform = process.platform) {
-  const f = pathKey(folder, platform)
+  const fs_ = (Array.isArray(folder) ? folder : [folder]).map(f => pathKey(f, platform))
   let best = null
   let bestLen = -1
   for (const r of rules) {
@@ -84,7 +89,7 @@ function accountFor(folder, rules, platform = process.platform) {
       continue
     }
     const p = pathKey(r.path, platform)
-    if ((f === p || f.startsWith(p + '/')) && p.length > bestLen) {
+    if (fs_.some(f => f === p || f.startsWith(p + '/')) && p.length > bestLen) {
       best = r
       bestLen = p.length
     }
@@ -108,7 +113,34 @@ function inheritedAccount(folder, rules, platform = process.platform) {
   return accountFor(folder, rules.filter(r => !own.includes(r)), platform)
 }
 
+// Edits of accounts, folders and sync run one window at a time: two windows writing at once would each drop the
+// other's line. Waits briefly for another window; the file is replaced in one step, so a reader never sees half of it.
+function editConfig(p, fn) {
+  const lock = path.join(p.base, 'config.lock')
+  let release = null
+  for (let i = 0; i < 100 && !(release = acquireLock(lock, { staleMs: 10_000 })); i++) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20)
+  }
+  if (!release) throw new Error('Another VS Code window is changing the Billable settings. Try again in a moment.')
+  try {
+    return fn()
+  } finally {
+    release()
+  }
+}
+
+function writeAtomic(file, text) {
+  const tmp = `${file}.${process.pid}.tmp`
+  fs.writeFileSync(tmp, text)
+  fs.renameSync(tmp, file)
+}
+
 function pin(p, folder, name, platform = process.platform) {
+  fs.mkdirSync(p.base, { recursive: true })
+  return editConfig(p, () => pinNow(p, folder, name, platform))
+}
+
+function pinNow(p, folder, name, platform) {
   let lines = []
   try {
     lines = fs.readFileSync(p.folders, 'utf8').split('\n').filter(l => l.trim())
@@ -118,22 +150,35 @@ function pin(p, folder, name, platform = process.platform) {
     return l.trim().startsWith('#') || first === '*' || pathKey(expand(first, p.home), platform) !== pathKey(folder, platform)
   })
   if (name !== 'auto') kept.push(`${folder}\t${name}`)
+  writeAtomic(p.folders, kept.join('\n') + '\n')
+}
+
+// Drops the folder's own rule, and the rule of its real path when it was opened through a link: "Use default".
+function unpin(p, folder) {
   fs.mkdirSync(p.base, { recursive: true })
-  fs.writeFileSync(p.folders, kept.join('\n') + '\n')
+  editConfig(p, () => {
+    pinNow(p, folder, 'auto', process.platform)
+    const real = realPath(folder)
+    if (pathKey(real) !== pathKey(folder)) pinNow(p, real, 'auto', process.platform)
+  })
 }
 
 function addAccount(p, name, dir) {
   fs.mkdirSync(p.base, { recursive: true })
-  let text = ''
-  try {
-    text = fs.readFileSync(p.accounts, 'utf8')
-  } catch {}
-  const rows = readRows(p.accounts)
-  if (rows.length === 0) text = `default\t~/.claude\n`
-  if (rows.some(r => r[0] === name)) throw new Error(`An account named ${name} already exists`)
-  if (text && !text.endsWith('\n')) text += '\n'
-  fs.writeFileSync(p.accounts, `${text}${name}\t${dir}\n`)
+  // The folder first: a line for an account whose folder could not be made would block its name for good.
   fs.mkdirSync(expand(dir, p.home), { recursive: true })
+  editConfig(p, () => {
+    let text = ''
+    try {
+      text = fs.readFileSync(p.accounts, 'utf8')
+    } catch {}
+    const rows = readRows(p.accounts)
+    if (rows.some(r => r[0] === name)) throw new Error(`An account named ${name} already exists`)
+    if (text && !text.endsWith('\n')) text += '\n'
+    // The first account added also lists the default one; comments already in the file stay.
+    if (rows.length === 0) text = `default\t~/.claude\n${text}`
+    writeAtomic(p.accounts, `${text}${name}\t${dir}\n`)
+  })
 }
 
 // Why an account must not be removed, or null. Removing it sends its folder to the trash, so never the account the
@@ -152,6 +197,10 @@ function removeBlocker(p, name) {
 
 // Drops the account and every folder rule that runs on it; its folder is left for the caller.
 function removeAccount(p, name) {
+  return editConfig(p, () => removeAccountNow(p, name))
+}
+
+function removeAccountNow(p, name) {
   const blocker = removeBlocker(p, name)
   if (blocker) throw new Error(blocker)
   const keep = file => {
@@ -161,9 +210,9 @@ function removeAccount(p, name) {
     } catch {}
     return lines.filter(l => l.trim().startsWith('#') || (l.split('\t')[1] || '').trim() !== name)
   }
-  fs.writeFileSync(p.accounts, keep(p.accounts).filter(l => (l.split('\t')[0] || '').trim() !== name).join('\n') + '\n')
-  if (fs.existsSync(p.folders)) fs.writeFileSync(p.folders, keep(p.folders).join('\n') + '\n')
-  if (fs.existsSync(p.sync)) writeShare(p, name, 'none')
+  writeAtomic(p.accounts, keep(p.accounts).filter(l => (l.split('\t')[0] || '').trim() !== name).join('\n') + '\n')
+  if (fs.existsSync(p.folders)) writeAtomic(p.folders, keep(p.folders).join('\n') + '\n')
+  if (fs.existsSync(p.sync)) writeShareNow(p, name, 'none')
 }
 
 // ---- Sharing with the default account ----
@@ -195,14 +244,18 @@ function shareLevel(p, name) {
 }
 
 function writeShare(p, name, level) {
+  fs.mkdirSync(p.base, { recursive: true })
+  return editConfig(p, () => writeShareNow(p, name, level))
+}
+
+function writeShareNow(p, name, level) {
   let lines = []
   try {
     lines = fs.readFileSync(p.sync, 'utf8').split('\n').filter(l => l.trim())
   } catch {}
   const kept = lines.filter(l => l.trim().startsWith('#') || (l.split('\t')[0] || '').trim() !== name)
   if (level !== 'none') kept.push(`${name}\t${level}`)
-  fs.mkdirSync(p.base, { recursive: true })
-  fs.writeFileSync(p.sync, kept.length ? kept.join('\n') + '\n' : '')
+  writeAtomic(p.sync, kept.length ? kept.join('\n') + '\n' : '')
 }
 
 function lstat(file) {
@@ -540,31 +593,57 @@ function sessionOpen(dir, sessionId, alive = pidAlive) {
 // What the status bar shows: the account the folder is set to, so a switch shows at once, usage from the latest
 // session on that account, and a conversation still open on another account. Claude Code runs a window's
 // conversations in its first folder, so in a multi-root workspace all of it comes from that folder alone.
-function folderView(p, roots) {
+function realPath(folder) {
+  try {
+    return fs.realpathSync(folder)
+  } catch {
+    return folder
+  }
+}
+
+// The account a new Claude Code tab in this folder really runs on, as the launchers decide it: the folder's rule (or
+// its real path's, opened through a link) when it names a known account; otherwise the launcher changes nothing, so
+// the tab runs on CLAUDE_CONFIG_DIR when VS Code has one, else on ~/.claude. Returns { name, dir }; name is the
+// listed account's, or the folder's own name when no listed account runs there.
+function launchedAccount(p, folder, rules, accounts, env = process.env) {
+  const ruled = accountFor([folder, realPath(folder)], rules)
+  const named = accounts.find(a => a.name === ruled)
+  if (named) return named
+  const dir = env.CLAUDE_CONFIG_DIR ? expand(env.CLAUDE_CONFIG_DIR, p.home) : path.join(p.home, '.claude')
+  const listed = accounts.find(a => pathKey(a.dir) === pathKey(dir))
+  if (listed) return listed
+  return { name: pathKey(dir) === pathKey(path.join(p.home, '.claude')) ? '~/.claude' : dir, dir }
+}
+
+// Where "Use default" sends the folder: null when it has no rule of its own (on its path or its real path).
+function useDefaultTarget(p, folder, env = process.env) {
+  const rules = readRules(p)
+  const own = new Set([pathKey(folder), pathKey(realPath(folder))])
+  const kept = rules.filter(r => r.path === '*' || !own.has(pathKey(r.path)))
+  if (kept.length === rules.length) return null
+  return launchedAccount(p, folder, kept, readAccounts(p), env).name
+}
+
+function folderView(p, roots, env = process.env) {
   if (roots.length === 0) return null
   const folder = roots[0]
   const accounts = readAccounts(p)
   const rules = readRules(p)
   // The launchers resolve the folder's real path when its own has no rule: a workspace opened through a link.
-  let real = folder
-  try {
-    real = fs.realpathSync(folder)
-  } catch {}
+  const real = realPath(folder)
   const places = pathKey(real) === pathKey(folder) ? [folder] : [folder, real]
   const latest = latestStatus(p, places)
-  const ruled = accountFor(folder, rules) ?? accountFor(real, rules)
-  // Without a rule, the launchers leave Claude Code on ~/.claude: the account that runs there, if one is listed.
-  const home = accounts.find(a => pathKey(a.dir) === pathKey(path.join(p.home, '.claude')))
-  const currentName = ruled ?? home?.name ?? latest?.account.name ?? accounts[0].name
-  const current = accounts.find(a => a.name === currentName)
+  const current = launchedAccount(p, folder, rules, accounts, env)
+  const currentName = current.name
   const status = latestStatus(p, places, currentName)
   // The sign-in the account has now, not the one its last session ran as: a "Sign in again" shows at once.
-  const email = current ? emailOf(current.dir, p.home) : (status?.account.email ?? NOT_SIGNED_IN)
-  // Only while that conversation is still open: once it is closed, nothing runs on the old account.
+  const email = emailOf(current.dir, p.home)
+  // Only while that conversation is still open: once it is closed, nothing runs on the old account. A status of an
+  // account that was removed since is not an open chat either.
   const oldDir = latest && accounts.find(a => a.name === latest.account.name)?.dir
-  const stillOpen = latest && (!oldDir || sessionOpen(oldDir, latest.sessionId))
+  const stillOpen = Boolean(oldDir) && sessionOpen(oldDir, latest.sessionId)
   const openOn = latest && latest.account.name !== currentName && stillOpen ? latest.account.name : null
-  return { folder, accounts, status, openOn, currentName, email }
+  return { folder, accounts, status, openOn, currentName, email, listed: accounts.includes(current) }
 }
 
 // Accounts signed in as the same Claude account. A sign-in typed in a terminal goes to the folder's account, so
@@ -987,6 +1066,9 @@ module.exports = {
   healSucceeded,
   emailOf,
   pin,
+  unpin,
+  useDefaultTarget,
+  launchedAccount,
   addAccount,
   removeBlocker,
   removeAccount,

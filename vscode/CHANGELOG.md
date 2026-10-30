@@ -23,6 +23,16 @@
 - A paid key whose weekly check was recorded in the future (a clock moved back) is checked again now; an activation the server accepted but this machine could not keep is given back to the key's limit and reported as such.
 - Only a program named `claude` (or Claude Code's script under node or bun) counts as a Claude session: a project folder named claude-something running something else never does.
 - `~` in the report stands only for the home folder itself; 999,999 tokens read 1.0M, not 1000K.
+- **The status bar names the account a new tab really runs on.** A folder without a rule, or whose rule names an account that does not exist, shows `~/.claude` (or the folder VS Code's own `CLAUDE_CONFIG_DIR` points at), never the first account of the file. A folder opened through a link takes the longer rule of its path and its real path, in the status bar and in both launchers alike, so a `*` rule no longer hides the real path's rule.
+- `Use default` drops the rule of the folder's real path too, when it was opened through a link.
+- A status left by an account that was removed no longer shows as a chat still open on it.
+- **Edits to the account files run one window at a time** (`Add account`, a switch, `Remove account`, sharing): two windows writing at once no longer drop each other's line, and each file is replaced in one step.
+- `Add account` makes the folder before it records the account, so a folder that cannot be made no longer leaves a name that can be neither used nor added again; comments in an accounts file with no account yet are kept.
+- `Remove account` on an account whose folder is already gone says it was removed, not that the folder could not be moved to the trash.
+- When the sign-in cannot start, no instructions follow for a terminal that never opened. On Windows, where Claude Code opens the default browser itself, the sign-in says so.
+- A share choice made while another window is busy waits for it, and if it is still busy, is kept and applied at the next start instead of being dropped.
+- A relative `CLAUDE_MULTI_ACCOUNT_HOME` is taken from the home folder by the extension, both launchers and the plugin alike.
+- Companion plugin 0.2.3: the handoff note is kept per working folder, so a sibling folder of the same repository on another account gets none; a note written at a switch waits for the session it was written for instead of being replaced by another session still at work there; it reads the accounts file like the launchers (`~\`, a BOM, CRLF, a name listed twice); once its account is removed, the chat line says where new conversations go; and `/account` offers accounts added after the session started.
 
 ## 0.7.0
 
