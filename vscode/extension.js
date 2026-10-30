@@ -25,13 +25,8 @@ function link(label, command, args) {
 }
 
 function installBin(context, p) {
-  fs.mkdirSync(p.bin, { recursive: true })
-  const files = lib.launcherFiles()
-  for (const name of files.names) {
-    const target = path.join(p.bin, name)
-    fs.copyFileSync(path.join(context.extensionPath, files.dir, name), target)
-    fs.chmodSync(target, 0o755)
-  }
+  const r = lib.installLauncher(context.extensionPath, p.bin)
+  if (r.errors.length) throw new Error(r.errors.join('; '))
 }
 
 function run(file, args, env) {
@@ -276,7 +271,16 @@ function activate(context) {
     return result
   }
 
+  // Called from timers and file watchers: a surprise in one file must not stop every later refresh.
   function refresh() {
+    try {
+      draw()
+    } catch (err) {
+      console.error('Billable: refresh failed', err)
+    }
+  }
+
+  function draw() {
     const v = view()
     if (!v) return item.hide()
     warnShared(v.accounts)
@@ -355,7 +359,12 @@ function activate(context) {
     // A conversation on an account with no sign-in asks to sign in through the default browser, which usually
     // authorizes another Claude account. So the sign-in comes first, with the link and the code.
     const target = lib.readAccounts(p).find(a => a.name === name)
-    if (target && lib.emailOf(target.dir, p.home) === lib.NOT_SIGNED_IN) {
+    // A stale hover, or an argument from the command palette: never pin a name the launcher cannot resolve.
+    if (!target) {
+      refresh()
+      return vscode.window.showWarningMessage(`There is no account named ${name}.`)
+    }
+    if (lib.emailOf(target.dir, p.home) === lib.NOT_SIGNED_IN) {
       const signInFirst = 'Sign in'
       const anyway = 'Switch anyway'
       const answer = await vscode.window.showWarningMessage(
@@ -407,7 +416,7 @@ function activate(context) {
   async function offerShare(name, email) {
     const src = source()
     const account = lib.readAccounts(p).find(a => a.name === name)
-    if (!account || account === src || lib.shareLevel(p, name) !== 'none') {
+    if (!account || account === src || lib.sameDir(account.dir, src.dir) || lib.shareLevel(p, name) !== 'none') {
       return vscode.window.showInformationMessage(`${name} is signed in as ${email}.`)
     }
     const memory = 'Share conversations and memory'
@@ -474,10 +483,13 @@ function activate(context) {
       remove,
     )
     if (answer !== remove) return
+    let signOut = null
     if (lib.emailOf(dir, p.home) !== lib.NOT_SIGNED_IN) {
       // Signs out with the account's own config dir, so its keychain entry goes too.
-      await new Promise(resolve =>
-        execFile(login.claude(), ['auth', 'logout'], { env: { ...process.env, CLAUDE_CONFIG_DIR: dir } }, () => resolve()),
+      signOut = await new Promise(resolve =>
+        execFile(login.claude(), ['auth', 'logout'], { env: { ...process.env, CLAUDE_CONFIG_DIR: dir }, timeout: 60_000 }, err =>
+          resolve(err ? (err.code === 'ENOENT' ? 'claude was not found' : String(err.message).trim().split('\n').pop()) : null),
+        ),
       )
     }
     try {
@@ -486,22 +498,31 @@ function activate(context) {
       return vscode.window.showErrorMessage(`Could not remove ${name}: ${err.message}`)
     }
     refresh()
+    const butSignOut = signOut ? ` Its sign-out did not run (${signOut}), so its entry may remain in the keychain.` : ''
     try {
       // A shared item in the folder is a link; the trash takes the link, never what it points to.
       await vscode.workspace.fs.delete(vscode.Uri.file(dir), { recursive: true, useTrash: true })
     } catch (err) {
-      return vscode.window.showWarningMessage(`${name} was removed, but ${dir} could not be moved to the trash: ${err.message}`)
+      return vscode.window.showWarningMessage(`${name} was removed, but ${dir} could not be moved to the trash: ${err.message}.${butSignOut}`)
     }
-    vscode.window.showInformationMessage(`${name} was removed.`)
+    if (signOut) vscode.window.showWarningMessage(`${name} was removed.${butSignOut}`)
+    else vscode.window.showInformationMessage(`${name} was removed.`)
   }
 
   // Runs claude itself, not a shell: a claude() wrapper in the shell profile (the one the README suggests)
   // would replace CLAUDE_CONFIG_DIR with the folder's account and sign that account in again.
   // `then` gets the email once the sign-in succeeds; without it, Billable says which email signed in.
   function signIn(name, dir, email, then) {
+    const claude = login.claude()
+    // A terminal that cannot start its program closes at once, which would read as "not signed in yet", forever.
+    if (!lib.onPath(claude)) {
+      return vscode.window.showErrorMessage(
+        'Claude Code was not found: install the Claude Code extension, or put the claude command on your PATH, then sign in again.',
+      )
+    }
     const terminal = vscode.window.createTerminal({
       name: `Claude login: ${name}`,
-      shellPath: login.claude(),
+      shellPath: claude,
       shellArgs: email ? ['auth', 'login', '--email', email] : ['auth', 'login'],
       env: {
         // ~/.claude is the account with no CLAUDE_CONFIG_DIR: naming it would make claude look for another sign-in.
@@ -552,6 +573,14 @@ function activate(context) {
       if (answer !== replace) return
     }
     await config.update('claudeProcessWrapper', launcher, vscode.ConfigurationTarget.Global)
+    // A workspace setting wins over the user one just written, and would keep the old wrapper in this window.
+    const i = vscode.workspace.getConfiguration('claudeCode').inspect('claudeProcessWrapper')
+    const override = [i?.workspaceFolderValue, i?.workspaceValue].find(v => v && v !== launcher)
+    if (override) {
+      return vscode.window.showWarningMessage(
+        `The Billable launcher is set for you, but this workspace's own settings launch Claude Code through ${override}. Remove claudeCode.claudeProcessWrapper from the workspace settings so the launcher applies here.`,
+      )
+    }
     vscode.window.showInformationMessage('Claude Code tabs now start on the account each folder is set to.')
   }
 
@@ -575,7 +604,8 @@ function activate(context) {
   async function share(name) {
     const accounts = lib.readAccounts(p)
     const src = lib.shareSource(accounts)
-    const others = accounts.filter(a => a.name !== src.name)
+    // Not an account on the source's own folder: it has everything already, and linking it would eat its files.
+    const others = accounts.filter(a => a.name !== src.name && !lib.sameDir(a.dir, src.dir))
     if (!others.length) return vscode.window.showInformationMessage('Add another account first: it can then share with the default one.')
     const current = view()?.currentName
     const pickName =
@@ -808,17 +838,28 @@ function activate(context) {
     vscode.window.showWarningMessage(`Billable could not check what accounts share: ${err.message}`)
   }
 
-  // Accounts added before the plugin was installed with them, or by hand, get it now, one after another.
+  // Accounts added before the plugin was installed with them, or by hand, get it now, one after another: in one
+  // window at a time, and an account where it failed is tried again the next day, not on every window that opens.
   const healed = (async () => {
-    for (const a of lib.accountsMissingPlugin(lib.readAccounts(p))) {
-      try {
-        await plugin.install(a.dir)
-        vscode.window.showInformationMessage(
-          `Billable added its plugin to ${a.name}. New Claude sessions on ${a.name} show the account above the prompt.`,
-        )
-      } catch (err) {
-        vscode.window.showWarningMessage(`Billable could not add its plugin to ${a.name}: ${err.message}`)
+    const due = lib.accountsMissingPlugin(lib.readAccounts(p)).filter(a => lib.healDue(p, a.dir))
+    if (!due.length) return
+    const release = lib.acquireLock(path.join(p.base, 'plugin-heal.lock'), { staleMs: 10 * 60_000 })
+    if (!release) return
+    try {
+      for (const a of due) {
+        try {
+          await plugin.install(a.dir)
+          lib.healSucceeded(p, a.dir)
+          vscode.window.showInformationMessage(
+            `Billable added its plugin to ${a.name}. New Claude sessions on ${a.name} show the account above the prompt.`,
+          )
+        } catch (err) {
+          lib.healFailed(p, a.dir)
+          vscode.window.showWarningMessage(`Billable could not add its plugin to ${a.name}: ${err.message}. It tries again tomorrow.`)
+        }
       }
+    } finally {
+      release()
     }
   })()
 

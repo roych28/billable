@@ -386,6 +386,19 @@ check('"Add account" in the menu runs the add-account flow', async () => {
   }
 })
 
+check('switching to an account that is not in the accounts file is refused, and pins nothing', async () => {
+  const before = fs.readFileSync(path.join(base, 'folders'), 'utf8')
+  const warn = answer('showWarningMessage', undefined)
+  try {
+    await vscode.commands.executeCommand('claudeMultiAccount.switchTo', 'ghost')
+  } finally {
+    warn.restore()
+  }
+  assert.strictEqual(warn.seen[0]?.[0], 'There is no account named ghost.')
+  assert.strictEqual(fs.readFileSync(path.join(base, 'folders'), 'utf8'), before, 'the folders file is untouched')
+  assert.ok(api.statusBar().text.startsWith('$(account) acme'), api.statusBar().text)
+})
+
 // A license that never reaches the server: Pro once `activate` was called with the right key.
 function fakeLicense(pro = false) {
   const l = {

@@ -106,14 +106,16 @@ func withoutVar(env []string, name string) []string {
 	return out
 }
 
-// readRows reads a tab-separated file, skipping blank lines and # comments. It returns nil when the file is missing.
+// readRows reads a tab-separated file, skipping blank lines and # comments, and tolerating a BOM, CRLF line endings
+// and spaces around the fields, like the extension does. It returns nil when the file is missing.
 func readRows(file string) [][2]string {
 	data, err := os.ReadFile(file)
 	if err != nil {
 		return nil
 	}
 	rows := [][2]string{}
-	for _, line := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
+	text := strings.TrimPrefix(string(data), "\uFEFF")
+	for _, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue

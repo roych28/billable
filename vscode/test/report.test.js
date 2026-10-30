@@ -109,3 +109,57 @@ test('the shipped PRODUCT points at the Billable Pro store and product', () => {
   assert.strictEqual(PRODUCT.productId, 1450746)
   assert.match(PRODUCT.checkoutUrl, /^https:\/\/claude-multi-account\.lemonsqueezy\.com\/checkout\/buy\//)
 })
+
+test('the CSV export survives a ledger entry without updatedAt, and its timestamps agree with the month column', () => {
+  const firstNight = new Date(2026, 10, 1, 0, 30).getTime() // 1 Nov 00:30 local
+  const csv = report.toCsv([entry({ startedAt: firstNight, updatedAt: undefined })], '2026-11').trim().split('\n')
+  assert.strictEqual(csv.length, 2)
+  const cells = csv[1].split(',')
+  assert.strictEqual(cells[0], '2026-11')
+  assert.match(cells[5], /^2026-11-01T00:30:00[+-]\d\d:\d\d$/)
+  assert.strictEqual(cells[6], cells[5], 'the start stands in for a missing last write')
+  assert.strictEqual(report.localIso(undefined), '')
+})
+
+test('a path that merely starts with the home string is not shortened to ~', () => {
+  const summary = report.summarize([entry({ folder: '/Users/me/app' }), entry({ sessionId: 's2', folder: '/Users/meow/app' })], '2026-10')
+  const md = report.toMarkdown(summary, '2026-10', '/Users/me')
+  assert.ok(md.includes('| ~/app |'), md)
+  assert.ok(md.includes('| /Users/meow/app |'), md)
+})
+
+test('a checkedAt in the future forces a re-validation', async () => {
+  const product = { storeId: 7, productId: 42, checkoutUrl: 'https://example.test/buy' }
+  const secrets = memorySecrets()
+  const calls = []
+  const fetchImpl = async url => {
+    calls.push(url)
+    return { json: async () => (url.endsWith('activate') ? { activated: true, instance: { id: 'i1' }, meta: { store_id: 7, product_id: 42 } } : { valid: false }) }
+  }
+  let now = 10 * 24 * 3_600_000
+  const l = createLicense({ secrets, product, fetchImpl, now: () => now })
+  await l.activate('good-key', 'mac')
+  now -= 3 * 24 * 3_600_000 // the clock was moved back
+  assert.strictEqual(await l.isPro(), false)
+  assert.strictEqual(calls.filter(c => c.endsWith('validate')).length, 1)
+})
+
+test('activation reports a malformed answer or a failing secret store as such, and gives the activation back', async () => {
+  const product = { storeId: 7, productId: 42, checkoutUrl: 'https://example.test/buy' }
+  const calls = []
+  let instance = undefined
+  const fetchImpl = async (url, init) => {
+    calls.push([url.split('/').pop(), init.body])
+    return { json: async () => ({ activated: true, instance, meta: { store_id: 7, product_id: 42 } }) }
+  }
+  const noInstance = createLicense({ secrets: memorySecrets(), product, fetchImpl })
+  assert.deepStrictEqual(await noInstance.activate('k', 'mac'), { ok: false, error: 'The license server gave an answer without an instance id' })
+  instance = { id: 'i9' }
+  const broken = { get: async () => undefined, store: async () => { throw new Error('keyring unavailable') }, delete: async () => {} }
+  const r = await createLicense({ secrets: broken, product, fetchImpl }).activate('k', 'mac')
+  assert.strictEqual(r.ok, false)
+  assert.match(r.error, /could not keep it: keyring unavailable/)
+  const last = calls[calls.length - 1]
+  assert.strictEqual(last[0], 'deactivate')
+  assert.ok(last[1].includes('instance_id=i9'), last[1])
+})

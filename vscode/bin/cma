@@ -1,6 +1,7 @@
 #!/bin/sh
 # cma dir [path]     print the Claude config dir the folder runs on (nothing when no rule matches)
 # cma exec cmd ...   run cmd with CLAUDE_CONFIG_DIR set for the current folder
+# The files may carry a BOM, CRLF line endings and spaces around the fields; a name listed twice keeps its first line.
 BASE="${CLAUDE_MULTI_ACCOUNT_HOME:-$HOME/.claude-multi-account}"
 
 resolve() {
@@ -12,8 +13,10 @@ resolve() {
       sub(/\/+$/, "", p)
       return p
     }
-    /^[ \t]*#/ || NF < 2 { next }
-    FILENAME == ARGV[1] { acc[$1] = expand($2); next }
+    FNR == 1 && substr($0, 1, 3) == "\357\273\277" { $0 = substr($0, 4) }
+    { sub(/\r$/, ""); gsub(/^[ \t]+|[ \t]+$/, "", $1); gsub(/^[ \t]+|[ \t]+$/, "", $2) }
+    /^[ \t]*#/ || NF < 2 || $1 == "" || $2 == "" { next }
+    FILENAME == ARGV[1] { if (!($1 in acc)) acc[$1] = expand($2); next }
     {
       if ($1 == "*") { if (best == "") { best = "*"; name = $2 }; next }
       p = expand($1)

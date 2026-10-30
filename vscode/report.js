@@ -70,8 +70,23 @@ function money(usd) {
   return `$${usd.toFixed(2)}`
 }
 
+// The time as the person sees it, with the offset: the month column is in local time, so the timestamps are too,
+// and a session half an hour after midnight on the 1st is billed to the new month in every column.
+function localIso(ms) {
+  if (!Number.isFinite(ms)) return ''
+  const d = new Date(ms)
+  const two = n => String(n).padStart(2, '0')
+  const off = -d.getTimezoneOffset()
+  const sign = off >= 0 ? '+' : '-'
+  return (
+    `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}T${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}` +
+    `${sign}${two(Math.floor(Math.abs(off) / 60))}:${two(Math.abs(off) % 60)}`
+  )
+}
+
 function toMarkdown(summary, month, home = '') {
-  const tidy = f => (home && f.startsWith(home) ? '~' + f.slice(home.length) : f)
+  // Only the home folder itself and what is inside it: /Users/me is not a prefix of /Users/meow.
+  const tidy = f => (home && (f === home || f.startsWith(home + path.sep) || f.startsWith(home + '/')) ? '~' + f.slice(home.length) : f)
   const lines = [`# Claude cost by account, ${month}`, '']
   if (summary.length === 0) {
     lines.push('No sessions recorded this month yet. The Claude Code plugin records each session as it runs.')
@@ -106,12 +121,13 @@ function toCsv(entries, month) {
       e.email,
       e.folder,
       e.sessionId,
-      new Date(e.startedAt).toISOString(),
-      new Date(e.updatedAt).toISOString(),
+      localIso(e.startedAt),
+      // A ledger row written by another version may lack the last write; the start stands in.
+      localIso(typeof e.updatedAt === 'number' ? e.updatedAt : e.startedAt),
       e.usd.toFixed(4),
     ])
   }
   return rows.map(r => r.map(csvCell).join(',')).join('\n') + '\n'
 }
 
-module.exports = { readLedger, monthOf, months, freeMonths, summarize, toMarkdown, toCsv }
+module.exports = { readLedger, monthOf, months, freeMonths, summarize, toMarkdown, toCsv, localIso }

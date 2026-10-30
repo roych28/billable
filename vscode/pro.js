@@ -39,7 +39,9 @@ function createLicense({ secrets, product = PRODUCT, fetchImpl = fetch, now = ()
       if (product === null) return true
       const saved = await load()
       if (!saved) return false
-      if (now() - saved.checkedAt < RECHECK_MS) return true
+      // A check in the future (the clock was moved back) does not count: the key is checked again now.
+      const since = now() - saved.checkedAt
+      if (since >= 0 && since < RECHECK_MS) return true
       let r
       try {
         r = await call('validate', { license_key: saved.key, instance_id: saved.instanceId }, fetchImpl)
@@ -61,9 +63,17 @@ function createLicense({ secrets, product = PRODUCT, fetchImpl = fetch, now = ()
     async activate(key, instanceName) {
       if (product === null) return { ok: true }
       const r = await call('activate', { license_key: key.trim(), instance_name: instanceName }, fetchImpl)
-      if (!r.activated) return { ok: false, error: r.error ?? 'The key was not accepted' }
+      if (!r?.activated) return { ok: false, error: r?.error ?? 'The key was not accepted' }
       if (!isOurs(r.meta, product)) return { ok: false, error: 'This key is for a different product' }
-      await secrets.store(KEY, JSON.stringify({ key: key.trim(), instanceId: r.instance.id, checkedAt: now() }))
+      const instanceId = r.instance?.id
+      if (typeof instanceId !== 'string' || !instanceId) return { ok: false, error: 'The license server gave an answer without an instance id' }
+      try {
+        await secrets.store(KEY, JSON.stringify({ key: key.trim(), instanceId, checkedAt: now() }))
+      } catch (err) {
+        // The activation counts against the key's limit: give it back, since nothing here remembers it.
+        await call('deactivate', { license_key: key.trim(), instance_id: instanceId }, fetchImpl).catch(() => {})
+        return { ok: false, error: `The key was accepted, but this machine could not keep it: ${err.message}` }
+      }
       return { ok: true }
     },
   }

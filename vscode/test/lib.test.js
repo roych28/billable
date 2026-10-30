@@ -167,6 +167,11 @@ test('in a multi-root workspace the account, usage and open-chat warning all com
   row('app', '/w/app/src', 'acme', 1)
   // Newer, but in the second folder, where no chat of this window runs.
   row('api', '/w/api', 'personal', 2)
+  const signedInAs = (name, email) => {
+    fs.mkdirSync(path.join(p.home, `.claude-${name}`), { recursive: true })
+    fs.writeFileSync(path.join(p.home, `.claude-${name}`, '.claude.json'), JSON.stringify({ oauthAccount: { emailAddress: email } }))
+  }
+  signedInAs('acme', 'acme@x.test')
   const v = lib.folderView(p, ['/w/app', '/w/api'])
   assert.strictEqual(v.folder, '/w/app')
   assert.strictEqual(v.currentName, 'acme')
@@ -174,6 +179,12 @@ test('in a multi-root workspace the account, usage and open-chat warning all com
   assert.strictEqual(v.email, 'acme@x.test')
   assert.strictEqual(v.openOn, null)
   assert.strictEqual(lib.folderView(p, []), null)
+  // The hover shows the sign-in the account has now, not the one its last session ran as.
+  signedInAs('acme', 'other@x.test')
+  assert.strictEqual(lib.folderView(p, ['/w/app']).email, 'other@x.test')
+  fs.rmSync(path.join(p.home, '.claude-acme', '.claude.json'))
+  assert.strictEqual(lib.folderView(p, ['/w/app']).email, lib.NOT_SIGNED_IN, 'signed out shows as such, whatever the old session said')
+  signedInAs('acme', 'acme@x.test')
 
   row('app2', '/w/app', 'personal', 3)
   assert.strictEqual(lib.folderView(p, ['/w/app', '/w/api']).openOn, 'personal', 'a chat in the first folder still on another account is flagged')
@@ -585,4 +596,205 @@ test('the plugin is offered when no account has it, and not once one has it or t
   assert.deepStrictEqual(lib.accountsToOfferPlugin([a, off]), [])
   const on = pluginAccount(home, 'on', { installedFrom: 'claude-multi-account' })
   assert.deepStrictEqual(lib.accountsToOfferPlugin([a, on]), [])
+})
+
+// ---- Findings of the 30.10.2026 audit, one test each ----
+
+test('the accounts file tolerates a BOM, CRLF and spaces, and a name listed twice counts once, first line first', () => {
+  const p = sandbox()
+  fs.mkdirSync(p.base, { recursive: true })
+  fs.writeFileSync(p.accounts, '\uFEFFacme\t ~/.claude-acme \r\nacme\t~/.claude-second\r\n\r\n# note\r\npersonal\t~/.claude-personal\r\n')
+  assert.deepStrictEqual(
+    lib.readAccounts(p).map(a => [a.name, a.dir]),
+    [['acme', path.join(p.home, '.claude-acme')], ['personal', path.join(p.home, '.claude-personal')]],
+  )
+})
+
+test('the shell launcher reads a BOM, CRLF and space-padded files like the extension does', { skip: process.platform === 'win32' }, () => {
+  const p = sandbox()
+  fs.mkdirSync(p.base, { recursive: true })
+  fs.writeFileSync(p.accounts, '\uFEFFacme\t ~/.claude-acme \r\nacme\t~/.claude-second\r\n')
+  fs.writeFileSync(p.folders, '/w/app \t acme\r\n')
+  const cma = path.join(__dirname, '..', 'bin', 'cma')
+  const out = execFileSync('sh', [cma, 'dir', '/w/app/src'], { encoding: 'utf8', env: { ...process.env, CLAUDE_MULTI_ACCOUNT_HOME: p.base, HOME: p.home } })
+  assert.strictEqual(out.trim(), path.join(p.home, '.claude-acme'))
+})
+
+test('a session status without an account or a folder is skipped, not fatal', () => {
+  const p = sandbox()
+  fs.mkdirSync(p.sessions, { recursive: true })
+  fs.writeFileSync(p.accounts, 'default\t~/.claude\nacme\t~/.claude-acme\n')
+  fs.writeFileSync(p.folders, '/w/app\tacme\n')
+  fs.writeFileSync(path.join(p.sessions, 'future.json'), JSON.stringify({ sessionId: 'f', cwd: '/w/app', updatedAt: 9 }))
+  fs.writeFileSync(path.join(p.sessions, 'half.json'), JSON.stringify({ sessionId: 'h', account: { name: 'acme' }, updatedAt: 8 }))
+  const v = lib.folderView(p, ['/w/app'])
+  assert.strictEqual(v.currentName, 'acme')
+  assert.strictEqual(v.status, null)
+  assert.strictEqual(v.openOn, null)
+})
+
+test('a folder reached through a link shows the account of its real path, like the launcher', { skip: process.platform === 'win32' }, () => {
+  const p = sandbox()
+  const real = path.join(p.home, 'real', 'app')
+  const link = path.join(p.home, 'link')
+  fs.mkdirSync(real, { recursive: true })
+  fs.symlinkSync(path.join(p.home, 'real'), link)
+  fs.mkdirSync(p.base, { recursive: true })
+  fs.writeFileSync(p.accounts, 'default\t~/.claude\nacme\t~/.claude-acme\n')
+  fs.writeFileSync(p.folders, `${real}\tacme\n`)
+  assert.strictEqual(lib.folderView(p, [path.join(link, 'app')]).currentName, 'acme')
+})
+
+test('a folder without a rule shows the account on ~/.claude, which is where the launcher leaves it', () => {
+  const p = sandbox()
+  fs.mkdirSync(p.base, { recursive: true })
+  fs.writeFileSync(p.accounts, 'acme\t~/.claude-acme\nhome\t~/.claude\n')
+  fs.writeFileSync(p.folders, '/w/app\tacme\n')
+  assert.strictEqual(lib.folderView(p, ['/elsewhere']).currentName, 'home')
+  fs.writeFileSync(p.accounts, 'acme\t~/.claude-acme\n')
+  assert.strictEqual(lib.folderView(p, ['/elsewhere']).currentName, 'acme', 'without an account on ~/.claude, the first one is all there is to show')
+})
+
+test('sharing refuses an account whose folder is, or links to, the default account\'s folder', { skip: process.platform === 'win32' }, () => {
+  const { p, source, account } = shareSandbox()
+  fs.rmSync(account, { recursive: true, force: true })
+  fs.symlinkSync(source, account)
+  const r = lib.applyShare(account, source, 'memory', { now: 0 })
+  assert.match(r.errors[0], /same folder/)
+  assert.ok(fs.lstatSync(path.join(source, 'projects')).isDirectory(), 'the conversations stayed where they were')
+  assert.strictEqual(fs.readFileSync(path.join(source, 'CLAUDE.md'), 'utf8'), 'mine')
+  fs.mkdirSync(p.base, { recursive: true })
+  fs.writeFileSync(p.accounts, `default\t~/.claude\ntwin\t${account}\n`)
+  fs.writeFileSync(p.sync, 'twin\tmemory\n')
+  assert.deepStrictEqual(lib.applyShares(p), [], 'a saved choice for such an account is skipped')
+  assert.ok(lib.sameDir(account, source) && !lib.sameDir(path.join(p.home, '.claude-x'), source))
+})
+
+test('when no link can be made in the account folder, nothing is moved for it', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, () => {
+  const { source, account } = shareSandbox()
+  fs.writeFileSync(path.join(account, 'CLAUDE.md'), 'acme notes')
+  fs.chmodSync(account, 0o555)
+  try {
+    const r = lib.applyShare(account, source, 'memory', { now: 0 })
+    assert.ok(r.errors.length > 0 && r.errors.every(e => /cannot make a link here/.test(e)), r.errors.join('; '))
+    assert.strictEqual(fs.readFileSync(path.join(account, 'CLAUDE.md'), 'utf8'), 'acme notes')
+    assert.strictEqual(fs.readFileSync(path.join(source, 'CLAUDE.md'), 'utf8'), 'mine')
+    assert.strictEqual(r.backup, null)
+  } finally {
+    fs.chmodSync(account, 0o755)
+  }
+  assert.strictEqual(lib.canLink(account, true), null)
+})
+
+test('a dangling link Billable made is remade, and removed at level none', () => {
+  const { source, account } = shareSandbox()
+  assert.deepStrictEqual(lib.applyShare(account, source, 'memory', { now: 0 }).errors, [])
+  fs.rmSync(path.join(source, 'CLAUDE.md'))
+  fs.rmSync(path.join(source, 'todos'), { recursive: true, force: true })
+  const again = lib.applyShare(account, source, 'memory', { now: 1 })
+  assert.deepStrictEqual(again.errors, [], 'the links Billable made are recognised without their target')
+  assert.ok(fs.statSync(path.join(source, 'todos')).isDirectory(), 'a shared folder the source lost comes back')
+  assert.ok(fs.lstatSync(path.join(account, 'CLAUDE.md')).isSymbolicLink())
+  const none = lib.applyShare(account, source, 'none', { now: 2 })
+  assert.ok(none.unlinked.includes('CLAUDE.md'))
+  assert.strictEqual(lib.lstat?.(path.join(account, 'CLAUDE.md')) ?? fs.existsSync(path.join(account, 'CLAUDE.md')), false, 'the dangling link is gone')
+})
+
+test('sessionTokens reads a large transcript in bounded pieces, and a line split across pieces counts once', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cma-big-'))
+  const file = path.join(dir, 'big.jsonl')
+  const pad = 'x'.repeat(1000)
+  const line = i => JSON.stringify({ type: 'assistant', message: { id: `m${i}`, usage: { input_tokens: 1, output_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } }, pad }) + '\n'
+  const n = 9000 // ~9 MB, more than one 8 MB piece
+  const fd = fs.openSync(file, 'w')
+  for (let i = 0; i < n; i++) fs.writeSync(fd, line(i))
+  fs.closeSync(fd)
+  const t = lib.sessionTokens(file)
+  assert.deepStrictEqual(t, { input: n, output: 2 * n, cacheRead: 0, cacheWrite: 0 })
+  fs.appendFileSync(file, line(n))
+  assert.strictEqual(lib.sessionTokens(file).input, n + 1, 'the next read starts where the last one stopped')
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('short rounds 999,500 up to 1.0M, not 1000K', () => {
+  assert.strictEqual(lib.short(999_999), '1.0M')
+  assert.strictEqual(lib.short(999_499), '999K')
+  assert.strictEqual(lib.short(1_500), '2K')
+  assert.strictEqual(lib.short(999), '999')
+})
+
+test('a program under a folder named claude-something is not a Claude binary, and the desktop app is not either', () => {
+  assert.ok(!lib.isClaudeCommand('/Users/me/Projects/claude-multi-account/node_modules/.bin/vitest run'))
+  assert.ok(!lib.isClaudeCommand('node /Users/me/Projects/claude-multi-account/x.js'))
+  assert.ok(!lib.isClaudeCommand('/Applications/Claude.app/Contents/MacOS/Claude'))
+  assert.ok(lib.isClaudeCommand('C:\\Users\\me\\AppData\\Local\\Programs\\claude\\claude.exe --resume x'))
+  assert.ok(lib.isClaudeCommand('bun /home/me/.bun/install/global/node_modules/@anthropic-ai/claude-code/cli.js'))
+  assert.ok(lib.isClaudeCommand('/opt/homebrew/bin/node /opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js'))
+})
+
+test('a lock whose mtime is in the future counts as stale', () => {
+  const p = sandbox()
+  const lock = lib.shareLock(p)
+  fs.mkdirSync(p.base, { recursive: true })
+  fs.writeFileSync(lock, '')
+  const future = (Date.now() + 3 * 3_600_000) / 1000
+  fs.utimesSync(lock, future, future)
+  assert.strictEqual(lib.withLock(lock, () => 'taken'), 'taken')
+  assert.ok(!fs.existsSync(lock))
+  const release = lib.acquireLock(lock)
+  assert.strictEqual(typeof release, 'function')
+  assert.strictEqual(lib.acquireLock(lock), null, 'held across async work until released')
+  release()
+  assert.ok(!fs.existsSync(lock))
+})
+
+test('installLauncher leaves an identical launcher alone and copies a changed one', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cma-bin-'))
+  const files = { dir: 'bin', names: ['cma'], wrapper: 'cma' }
+  fs.mkdirSync(path.join(root, 'bin'))
+  fs.writeFileSync(path.join(root, 'bin', 'cma'), '#!/bin/sh\necho one\n')
+  const bin = path.join(root, 'out')
+  assert.deepStrictEqual(lib.installLauncher(root, bin, files), { updated: ['cma'], errors: [] })
+  const old = new Date(Date.now() - 86_400_000)
+  fs.utimesSync(path.join(bin, 'cma'), old, old)
+  assert.deepStrictEqual(lib.installLauncher(root, bin, files), { updated: [], errors: [] })
+  assert.strictEqual(Math.round(fs.statSync(path.join(bin, 'cma')).mtimeMs / 1000), Math.round(old.getTime() / 1000), 'not rewritten')
+  fs.writeFileSync(path.join(root, 'bin', 'cma'), '#!/bin/sh\necho two\n')
+  assert.deepStrictEqual(lib.installLauncher(root, bin, files), { updated: ['cma'], errors: [] })
+  assert.strictEqual(fs.readFileSync(path.join(bin, 'cma'), 'utf8'), '#!/bin/sh\necho two\n')
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('onPath finds a program on PATH or by its absolute path, and nothing else', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cma-path-'))
+  fs.writeFileSync(path.join(dir, 'claude'), '', { mode: 0o755 })
+  fs.writeFileSync(path.join(dir, 'claude.exe'), '')
+  assert.ok(lib.onPath('claude', { PATH: dir }))
+  assert.ok(lib.onPath('claude', { PATH: `/nowhere${path.delimiter}${dir}` }, 'win32'))
+  assert.ok(!lib.onPath('claude', { PATH: '/nowhere' }))
+  assert.ok(!lib.onPath('claude', {}))
+  assert.ok(lib.onPath(path.join(dir, 'claude')))
+  assert.ok(!lib.onPath(path.join(dir, 'missing')))
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('a failed plugin install is tried again after a day, and a success clears it', () => {
+  const p = sandbox()
+  const dir = path.join(p.home, '.claude-acme')
+  assert.ok(lib.healDue(p, dir, 1000))
+  lib.healFailed(p, dir, 1000)
+  assert.ok(!lib.healDue(p, dir, 1000 + 3_600_000))
+  assert.ok(lib.healDue(p, dir, 1000 + 25 * 3_600_000))
+  assert.ok(lib.healDue(p, dir, 500), 'a failure in the future (clock put right) does not block')
+  assert.ok(lib.healDue(p, path.join(p.home, '.claude-other'), 2000))
+  lib.healSucceeded(p, dir)
+  assert.ok(lib.healDue(p, dir, 2000))
+})
+
+test('emailOf treats any spelling of ~/.claude as the default folder', () => {
+  const p = sandbox()
+  fs.writeFileSync(path.join(p.home, '.claude.json'), JSON.stringify({ oauthAccount: { emailAddress: 'me@home.test' } }))
+  assert.strictEqual(lib.emailOf(path.join(p.home, '.claude') + path.sep, p.home), 'me@home.test')
+  assert.strictEqual(lib.emailOf(path.join(p.home, '.claude'), p.home), 'me@home.test')
+  assert.strictEqual(lib.emailOf(path.join(p.home, '.claude-x'), p.home), lib.NOT_SIGNED_IN)
 })

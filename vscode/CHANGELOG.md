@@ -5,6 +5,24 @@
 - **Billable Pro is on.** The cost report's full history (beyond the current and the previous month) and the CSV export now take a license key: `Get Pro` opens the checkout, `Billable: Enter license key` activates a key on this machine (up to three machines per key), and the report the user asked for opens right after. The key is checked again once a week.
 - A paid key is never dropped by an outage, a rate limit or a broken answer from the license server at the weekly check; only the server saying the key is not valid does that.
 - `Billable: Enter license key` says when Pro is already active on this machine, and ignores a blank key.
+- **Sharing never eats the default account's own folder.** An account whose folder is, or links to, the default account's folder (an accounts file written by hand) is not offered sharing, and a saved choice for one is skipped; it used to move the conversations into a backup and leave a link pointing at itself.
+- **Nothing is moved for a link that cannot be made.** Whether links work in the account's folder is found out first (on Windows a file link needs Developer Mode), and a failure after a move puts the moved item back. A link Billable made whose target the default account deleted is recognised as Billable's and remade, instead of being reported as someone else's.
+- **The launchers read the account files like the extension does**: a BOM, CRLF line endings and spaces around the fields no longer send every tab to `~/.claude` while the status bar says otherwise; a name listed twice keeps its first line everywhere.
+- **The status bar agrees with the launcher** for a workspace opened through a link (the real path is tried too) and for a folder without a rule (the account on `~/.claude`, not the first account in the file).
+- The hover shows the sign-in the account has now, so `Sign in again` with another email shows at once.
+- A session status from another version, without an account or folder, no longer stops every refresh; a refresh that fails is logged and the next one runs.
+- A transcript of hundreds of MB is read in pieces instead of one string.
+- `Switch` to an account name that no longer exists is refused instead of pinning it.
+- `Remove account` says when the sign-out could not run (claude not found), since the keychain entry then remains.
+- The sign-in says when Claude Code is not found at all, instead of asking to sign in again forever.
+- `Set up` for the launcher warns when a workspace setting still launches Claude Code through something else.
+- The launcher files are copied only when they changed, so a launcher in use on Windows no longer fails every start.
+- The plugin install for an account that is missing it runs in one window at a time, and after a failure is tried again the next day, not on every window that opens.
+- The CSV's timestamps are in local time with the offset, like its month column, so a session half an hour after midnight on the 1st is in the new month in every column; a row without a last write no longer breaks the export.
+- A lock file with a time in the future (a clock that was put right) counts as stale.
+- A paid key whose weekly check was recorded in the future (a clock moved back) is checked again now; an activation the server accepted but this machine could not keep is given back to the key's limit and reported as such.
+- Only a program named `claude` (or Claude Code's script under node or bun) counts as a Claude session: a project folder named claude-something running something else never does.
+- `~` in the report stands only for the home folder itself; 999,999 tokens read 1.0M, not 1000K.
 
 ## 0.7.0
 

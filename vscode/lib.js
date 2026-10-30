@@ -23,11 +23,14 @@ function expand(p, home) {
   return full.replace(/[\\/]+$/, '')
 }
 
+// A tab-separated file edited by hand too: a BOM, CRLF line endings and spaces around the fields are all tolerated,
+// here and in the launchers (bin/cma, launcher/main.go), which must read it the same way.
 function readRows(file) {
   try {
     return fs
       .readFileSync(file, 'utf8')
-      .split('\n')
+      .replace(/^﻿/, '')
+      .split(/\r?\n/)
       .map(l => l.trim())
       .filter(l => l && !l.startsWith('#'))
       .map(l => l.split('\t').map(f => f.trim()))
@@ -37,9 +40,25 @@ function readRows(file) {
   }
 }
 
+// A name listed twice counts once, the first line wins: the launchers resolve a name to its first line too.
 function readAccounts(p) {
-  const rows = readRows(p.accounts).map(r => ({ name: r[0], dir: expand(r[1], p.home) }))
+  const seen = new Set()
+  const rows = readRows(p.accounts)
+    .filter(r => !seen.has(r[0]) && seen.add(r[0]))
+    .map(r => ({ name: r[0], dir: expand(r[1], p.home) }))
   return rows.length ? rows : [{ name: 'default', dir: path.join(p.home, '.claude') }]
+}
+
+// Whether two folders are the same place on disk: through links too, and by spelling when neither exists yet.
+function sameDir(a, b) {
+  const real = d => {
+    try {
+      return fs.realpathSync(d)
+    } catch {
+      return d
+    }
+  }
+  return pathKey(real(a)) === pathKey(real(b))
 }
 
 function readRules(p) {
@@ -74,7 +93,7 @@ function accountFor(folder, rules, platform = process.platform) {
 }
 
 function emailOf(dir, home) {
-  const file = dir === path.join(home, '.claude') ? path.join(home, '.claude.json') : path.join(dir, '.claude.json')
+  const file = pathKey(dir) === pathKey(path.join(home, '.claude')) ? path.join(home, '.claude.json') : path.join(dir, '.claude.json')
   try {
     return JSON.parse(fs.readFileSync(file, 'utf8')).oauthAccount?.emailAddress ?? NOT_SIGNED_IN
   } catch {
@@ -194,13 +213,34 @@ function lstat(file) {
   }
 }
 
+// A link at `file` that points at `target`: by where both resolve, or, when the target is gone (the source deleted
+// its CLAUDE.md), by the path written in the link. A dangling link Billable made is still Billable's link.
 function linksTo(file, target) {
   const s = lstat(file)
   if (!s?.isSymbolicLink()) return false
   try {
-    return fs.realpathSync(file) === fs.realpathSync(target)
+    if (fs.realpathSync(file) === fs.realpathSync(target)) return true
+  } catch {}
+  try {
+    const written = path.resolve(path.dirname(file), fs.readlinkSync(file))
+    return pathKey(written) === pathKey(path.resolve(target))
   } catch {
     return false
+  }
+}
+
+// Whether a link of this kind can be made in this folder: on Windows a file link needs Developer Mode, a junction
+// does not; some file systems allow neither. Found out before anything is moved for it.
+function canLink(dir, isDir, platform = process.platform) {
+  const probe = path.join(dir, `.billable-link-probe-${process.pid}`)
+  try {
+    fs.rmSync(probe, { force: true })
+    makeLink(dir, probe, isDir, platform)
+    fs.unlinkSync(probe)
+    return null
+  } catch (err) {
+    fs.rmSync(probe, { force: true })
+    return platform === 'win32' && !isDir ? `${err.message} (on Windows, turn on Developer Mode to allow file links)` : err.message
   }
 }
 
@@ -228,17 +268,34 @@ function makeLink(target, file, isDir, platform = process.platform) {
 function applyShare(accountDir, sourceDir, level, { platform = process.platform, now = Date.now() } = {}) {
   const wanted = new Set(SHARE_ITEMS[level] ?? [])
   const result = { linked: [], unlinked: [], backup: null, errors: [] }
-  const backupDir = path.join(accountDir, `billable-backup-${new Date(now).toISOString().replace(/[:.]/g, '-')}`)
-  const backup = (from, name) => {
-    fs.mkdirSync(backupDir, { recursive: true })
-    fs.renameSync(from, path.join(backupDir, name))
-    result.backup = backupDir
+  // Sharing a folder with itself would move its conversations away and leave a link pointing at itself.
+  if (sameDir(accountDir, sourceDir)) {
+    result.errors.push('the account runs on the same folder as the account it would share with')
+    return result
   }
+  const backupDir = path.join(accountDir, `billable-backup-${new Date(now).toISOString().replace(/[:.]/g, '-')}`)
   fs.mkdirSync(accountDir, { recursive: true })
+  const linkable = { dir: undefined, file: undefined }
+  const linkBlocker = isDir => {
+    const k = isDir ? 'dir' : 'file'
+    if (linkable[k] === undefined) linkable[k] = canLink(accountDir, isDir, platform)
+    return linkable[k]
+  }
   for (const name of new Set(Object.values(SHARE_ITEMS).flat())) {
     const own = path.join(accountDir, name)
     const shared = path.join(sourceDir, name)
     const isDir = !FILE_ITEMS.has(name)
+    // What this item moved, so a failure after it puts it back.
+    const moved = []
+    const move = (from, to) => {
+      fs.renameSync(from, to)
+      moved.push([to, from])
+    }
+    const backup = (from, name) => {
+      fs.mkdirSync(backupDir, { recursive: true })
+      move(from, path.join(backupDir, name))
+      result.backup = backupDir
+    }
     try {
       if (!wanted.has(name)) {
         if (!linksTo(own, shared)) continue
@@ -248,14 +305,23 @@ function applyShare(accountDir, sourceDir, level, { platform = process.platform,
         result.unlinked.push(name)
         continue
       }
-      if (linksTo(own, shared)) continue
+      if (linksTo(own, shared)) {
+        // Billable's own link, but the source lost the folder it points at: the folder comes back.
+        if (isDir && !lstat(shared)) fs.mkdirSync(shared, { recursive: true })
+        continue
+      }
       const mine = lstat(own)
       if (mine?.isSymbolicLink()) {
         result.errors.push(`${name} already links to ${fs.readlinkSync(own)}`)
         continue
       }
+      const blocker = linkBlocker(isDir)
+      if (blocker) {
+        result.errors.push(`${name}: cannot make a link here, ${blocker}`)
+        continue
+      }
       if (!lstat(shared)) {
-        if (mine) fs.renameSync(own, shared)
+        if (mine) move(own, shared)
         else if (isDir) fs.mkdirSync(shared, { recursive: true })
         // A file neither has: linked once the source has it.
         else continue
@@ -266,7 +332,12 @@ function applyShare(accountDir, sourceDir, level, { platform = process.platform,
           else backup(own, name)
         } else backup(own, name)
       }
-      makeLink(shared, own, isDir, platform)
+      try {
+        makeLink(shared, own, isDir, platform)
+      } catch (err) {
+        for (const [from, to] of moved.reverse()) fs.renameSync(from, to)
+        throw err
+      }
       result.linked.push(name)
     } catch (err) {
       result.errors.push(`${name}: ${err.message}`)
@@ -278,14 +349,26 @@ function applyShare(accountDir, sourceDir, level, { platform = process.platform,
 // Runs fn while holding a lock file, or returns null at once when another window holds it. VS Code restores
 // several windows together, and each would otherwise move the same files at the same time.
 function withLock(file, fn, { staleMs = 60_000 } = {}) {
+  const release = acquireLock(file, { staleMs })
+  if (!release) return null
+  try {
+    return fn()
+  } finally {
+    release()
+  }
+}
+
+// Takes the lock file, or returns null when another window holds it. The caller releases it, so work that waits on
+// something (a plugin install) can hold it too. Returns the release function.
+function acquireLock(file, { staleMs = 60_000 } = {}) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   let fd
   try {
     fd = fs.openSync(file, 'wx')
   } catch (err) {
     if (err.code !== 'EEXIST') throw err
-    // A window that died holding it leaves it behind.
-    if (Date.now() - (lstat(file)?.mtimeMs ?? 0) < staleMs) return null
+    // A window that died holding it leaves it behind. A time in the future (a clock that was put right) is stale too.
+    if (Math.abs(Date.now() - (lstat(file)?.mtimeMs ?? 0)) < staleMs) return null
     fs.rmSync(file, { force: true })
     try {
       fd = fs.openSync(file, 'wx')
@@ -293,9 +376,7 @@ function withLock(file, fn, { staleMs = 60_000 } = {}) {
       return null
     }
   }
-  try {
-    return fn()
-  } finally {
+  return () => {
     fs.closeSync(fd)
     fs.rmSync(file, { force: true })
   }
@@ -315,7 +396,7 @@ function applyShares(p) {
       const out = []
       for (const [name, level] of readShares(p)) {
         const a = accounts.find(x => x.name === name)
-        if (!a || a === source || !fs.existsSync(a.dir)) continue
+        if (!a || a === source || sameDir(a.dir, source.dir) || !fs.existsSync(a.dir)) continue
         out.push({ name, ...applyShare(a.dir, source.dir, level) })
       }
       return out
@@ -419,8 +500,10 @@ function latestStatus(p, roots, account) {
   for (const f of files) {
     try {
       const s = JSON.parse(fs.readFileSync(path.join(p.sessions, f), 'utf8'))
+      // A status from another version, or half written, says nothing the view can use.
+      if (typeof s.cwd !== 'string' || typeof s.account?.name !== 'string') continue
       if (!roots.some(r => isInside(s.cwd, r))) continue
-      if (account && s.account?.name !== account) continue
+      if (account && s.account.name !== account) continue
       if (!best || s.updatedAt > best.updatedAt) best = s
     } catch {}
   }
@@ -461,12 +544,22 @@ function folderView(p, roots) {
   if (roots.length === 0) return null
   const folder = roots[0]
   const accounts = readAccounts(p)
-  const latest = latestStatus(p, [folder])
-  const ruled = accountFor(folder, readRules(p))
-  const currentName = ruled ?? latest?.account.name ?? accounts[0].name
+  const rules = readRules(p)
+  // The launchers resolve the folder's real path when its own has no rule: a workspace opened through a link.
+  let real = folder
+  try {
+    real = fs.realpathSync(folder)
+  } catch {}
+  const places = pathKey(real) === pathKey(folder) ? [folder] : [folder, real]
+  const latest = latestStatus(p, places)
+  const ruled = accountFor(folder, rules) ?? accountFor(real, rules)
+  // Without a rule, the launchers leave Claude Code on ~/.claude: the account that runs there, if one is listed.
+  const home = accounts.find(a => pathKey(a.dir) === pathKey(path.join(p.home, '.claude')))
+  const currentName = ruled ?? home?.name ?? latest?.account.name ?? accounts[0].name
   const current = accounts.find(a => a.name === currentName)
-  const status = latestStatus(p, [folder], currentName)
-  const email = status?.account.email ?? (current ? emailOf(current.dir, p.home) : NOT_SIGNED_IN)
+  const status = latestStatus(p, places, currentName)
+  // The sign-in the account has now, not the one its last session ran as: a "Sign in again" shows at once.
+  const email = current ? emailOf(current.dir, p.home) : (status?.account.email ?? NOT_SIGNED_IN)
   // Only while that conversation is still open: once it is closed, nothing runs on the old account.
   const oldDir = latest && accounts.find(a => a.name === latest.account.name)?.dir
   const stillOpen = latest && (!oldDir || sessionOpen(oldDir, latest.sessionId))
@@ -506,6 +599,7 @@ function launcherFiles(platform = process.platform) {
 }
 
 const transcripts = new Map()
+const TRANSCRIPT_CHUNK = 8 * 1024 * 1024
 
 function sessionTokens(file) {
   if (!file || !fs.existsSync(file)) return null
@@ -521,20 +615,27 @@ function sessionTokens(file) {
     state.byMessage.clear()
   }
   if (size > state.offset) {
+    // In pieces: a transcript can be hundreds of MB, and one string of it all would not fit.
     const fd = fs.openSync(file, 'r')
-    const buf = Buffer.alloc(size - state.offset)
-    fs.readSync(fd, buf, 0, buf.length, state.offset)
-    fs.closeSync(fd)
-    state.offset = size
-    const lines = (state.tail + buf.toString('utf8')).split('\n')
-    state.tail = lines.pop() ?? ''
-    for (const line of lines) {
-      if (!line.includes('"usage"')) continue
-      try {
-        const r = JSON.parse(line)
-        const u = r.type === 'assistant' ? r.message?.usage : null
-        if (u) state.byMessage.set(r.message.id ?? r.requestId ?? r.uuid, u)
-      } catch {}
+    try {
+      const buf = Buffer.alloc(Math.min(TRANSCRIPT_CHUNK, size - state.offset))
+      while (state.offset < size) {
+        const n = fs.readSync(fd, buf, 0, Math.min(buf.length, size - state.offset), state.offset)
+        if (n <= 0) break
+        state.offset += n
+        const lines = (state.tail + buf.toString('utf8', 0, n)).split('\n')
+        state.tail = lines.pop() ?? ''
+        for (const line of lines) {
+          if (!line.includes('"usage"')) continue
+          try {
+            const r = JSON.parse(line)
+            const u = r.type === 'assistant' ? r.message?.usage : null
+            if (u) state.byMessage.set(r.message.id ?? r.requestId ?? r.uuid, u)
+          } catch {}
+        }
+      }
+    } finally {
+      fs.closeSync(fd)
     }
   }
   const t = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
@@ -548,7 +649,8 @@ function sessionTokens(file) {
 }
 
 function short(n) {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  // 999,500 rounds to 1.0M, not 1000K.
+  if (n >= 999_500) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${Math.round(n / 1_000)}K`
   return String(n)
 }
@@ -683,8 +785,14 @@ function systemPs(pids) {
 // or node or bun running Claude Code's script.
 function isClaudeCommand(command) {
   const words = String(command).trim().split(/\s+/)
-  if (/claude/.test(words[0] ?? '')) return true
-  return /(^|\/)(node|bun)$/.test(words[0] ?? '') && /claude/.test(words[1] ?? '')
+  const program = words[0] ?? ''
+  const base = program.split(/[\\/]/).pop()
+  // The program is claude itself, or a versioned install (~/.local/share/claude/versions/<v>) of it.
+  // Case matters: the desktop app's binary is Claude, and it is not a session.
+  if (/^claude(\.exe)?$/.test(base) || /(^|[\\/])claude[\\/]versions[\\/][^\\/]+$/.test(program)) return true
+  // node or bun running Claude Code's script: a path segment that is claude or claude-code, not a folder merely
+  // named after it (a project called claude-multi-account runs vitest, not Claude).
+  return /(^|[\\/])(node|bun)(\.exe)?$/i.test(program) && /(^|[\\/])(claude|claude-code|claude\.m?js)([\\/]|$)/.test(words[1] ?? '')
 }
 
 // The sessions of these config directories whose process is still a running claude, with RAM, age and quiet time.
@@ -791,6 +899,63 @@ function resumeCommand(s, home = os.homedir()) {
   return `cd ${shellQuote(s.cwd || home)} && ${env}claude --resume ${shellQuote(s.sessionId)}`
 }
 
+// Copies the launcher files that changed. One in use (Windows locks a running exe) is left as it is when it is already
+// this version, and reported when it is not. Returns { updated, errors }.
+function installLauncher(srcDir, binDir, files = launcherFiles()) {
+  fs.mkdirSync(binDir, { recursive: true })
+  const out = { updated: [], errors: [] }
+  for (const name of files.names) {
+    const from = path.join(srcDir, files.dir, name)
+    const to = path.join(binDir, name)
+    try {
+      const fresh = fs.readFileSync(from)
+      let same = false
+      try {
+        same = fresh.equals(fs.readFileSync(to))
+      } catch {}
+      if (same) continue
+      fs.copyFileSync(from, to)
+      fs.chmodSync(to, 0o755)
+      out.updated.push(name)
+    } catch (err) {
+      out.errors.push(`${name}: ${err.message}`)
+    }
+  }
+  return out
+}
+
+// Whether a program is on PATH (a bare name the sign-in terminal would run).
+function onPath(name, env = process.env, platform = process.platform) {
+  if (path.isAbsolute(name)) return fs.existsSync(name)
+  const exts = platform === 'win32' ? ['.exe', '.cmd', '.bat', ''] : ['']
+  for (const dir of (env.PATH ?? '').split(path.delimiter).filter(Boolean)) {
+    for (const ext of exts) if (fs.existsSync(path.join(dir, name + ext))) return true
+  }
+  return false
+}
+
+// A plugin install that failed for an account is tried again after a day, not on every window that opens.
+const HEAL_RETRY_MS = 24 * 60 * 60 * 1000
+function healFailures(p) {
+  return readJson(path.join(p.base, 'plugin-heal.json')) ?? {}
+}
+function healDue(p, dir, now = Date.now()) {
+  const at = healFailures(p)[pathKey(dir)]
+  return !(typeof at === 'number' && now - at < HEAL_RETRY_MS && now >= at)
+}
+function healFailed(p, dir, now = Date.now()) {
+  const all = healFailures(p)
+  all[pathKey(dir)] = now
+  fs.mkdirSync(p.base, { recursive: true })
+  fs.writeFileSync(path.join(p.base, 'plugin-heal.json'), JSON.stringify(all))
+}
+function healSucceeded(p, dir) {
+  const all = healFailures(p)
+  if (!(pathKey(dir) in all)) return
+  delete all[pathKey(dir)]
+  fs.writeFileSync(path.join(p.base, 'plugin-heal.json'), JSON.stringify(all))
+}
+
 function formatRam(kb) {
   const mb = kb / 1024
   return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`
@@ -813,6 +978,13 @@ module.exports = {
   readAccounts,
   readRules,
   accountFor,
+  sameDir,
+  canLink,
+  installLauncher,
+  onPath,
+  healDue,
+  healFailed,
+  healSucceeded,
   emailOf,
   pin,
   addAccount,
@@ -827,6 +999,7 @@ module.exports = {
   applyShare,
   applyShares,
   withLock,
+  acquireLock,
   shareLock,
   noBrowserEnv,
   PLUGIN,
