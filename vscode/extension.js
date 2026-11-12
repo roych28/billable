@@ -280,9 +280,35 @@ function activate(context) {
     }
   }
 
+  // The account this window's Claude Code read when it opened, or after the last refresh this extension caused.
+  let loadedAccount = null
+  function followAccount(v) {
+    if (loadedAccount === null || v.currentName === loadedAccount) {
+      loadedAccount = v.currentName
+      return
+    }
+    const old = v.accounts.find(a => a.name === loadedAccount)
+    const oldName = loadedAccount
+    loadedAccount = v.currentName
+    const file = lib.watchedLoginFile(p.home)
+    const oldEmail = old ? lib.emailOf(old.dir, p.home) : null
+    if (lib.staleAccountFix(oldEmail, lib.emailInFile(file)) === 'touch') {
+      lib.touch(file)
+      return
+    }
+    const reload = 'Reload window'
+    vscode.window
+      .showInformationMessage(
+        `${path.basename(v.folder)} now runs on ${v.currentName}, but Claude Code's Account & Usage in this window still shows ${oldName} (${oldEmail}) until the window reloads. Reload when no conversation here is in the middle of a task: open conversations can be resumed.`,
+        reload,
+      )
+      .then(answer => answer === reload && vscode.commands.executeCommand('workbench.action.reloadWindow'))
+  }
+
   function draw() {
     const v = view()
     if (!v) return item.hide()
+    followAccount(v)
     warnShared(v.accounts)
     const parts = [`$(account) ${v.currentName}`]
     let top = 0

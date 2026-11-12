@@ -646,6 +646,41 @@ function folderView(p, roots, env = process.env) {
   return { folder, accounts, status, openOn, currentName, email, listed: accounts.includes(current) }
 }
 
+// The login file Claude Code's VS Code extension watches. It reads it in VS Code's own process, which the Billable
+// launcher never reaches, so it is the default account's file unless VS Code itself was started with CLAUDE_CONFIG_DIR.
+function watchedLoginFile(home, env = process.env) {
+  const dir = env.CLAUDE_CONFIG_DIR ? expand(env.CLAUDE_CONFIG_DIR, home) : home
+  return path.join(dir, '.claude.json')
+}
+
+function emailInFile(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8')).oauthAccount?.emailAddress ?? null
+  } catch {
+    return null
+  }
+}
+
+// Claude Code keeps the account it read when the window opened (Account & Usage, the plan, its feature gates) until it
+// sees the watched login file change to an email other than that one. After this window's folder moved from one account
+// to another, a touch of the file makes it read the account again; unless the old account is the one in that file, as
+// with a folder leaving the default account: then nothing but a window reload refreshes it.
+function staleAccountFix(oldEmail, watchedEmail) {
+  if (!oldEmail || oldEmail === NOT_SIGNED_IN) return 'touch'
+  return watchedEmail && watchedEmail.toLowerCase() === oldEmail.toLowerCase() ? 'reload' : 'touch'
+}
+
+// Changes the file's time and nothing else, so Claude Code's watcher reads it again.
+function touch(file) {
+  try {
+    const now = new Date()
+    fs.utimesSync(file, now, now)
+    return true
+  } catch {
+    return false
+  }
+}
+
 // Accounts signed in as the same Claude account. A sign-in typed in a terminal goes to the folder's account, so
 // signing in "the new one" from the wrong folder silently replaces another account's sign-in.
 function sharedSignIns(p, accounts) {
@@ -1049,6 +1084,10 @@ function formatQuiet(ms) {
 
 module.exports = {
   NOT_SIGNED_IN,
+  watchedLoginFile,
+  emailInFile,
+  staleAccountFix,
+  touch,
   paths,
   pathKey,
   launcherFiles,
