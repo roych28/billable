@@ -12,6 +12,9 @@ const HANDOFF = `${BASE}/handoff/-Users-tester-code-app.json`
 // Every argument hint /account was registered with, across the tests.
 const hints: string[] = []
 
+// The session's current folder: a test moves it with `cd` after the session started.
+let currentCwd = CWD
+
 const ACCOUNTS = [
   'personal\t~/.claude',
   'acme\t~/.claude-acme',
@@ -30,6 +33,7 @@ function world(
     seen.push(e.context)
     return { text: e.text, context: e.context }
   })
+  currentCwd = CWD
   mock.env(on, { HOME, CLAUDE_CONFIG_DIR: `${HOME}/.claude-acme`, ...env })
   const clock = mock.clock(on, { now: 1_000_000 })
   on('fs.read', ($, e) => {
@@ -43,7 +47,7 @@ function world(
   on('process.run', () => ({
     value: { exitCode: 0, stdout: `${root}\n`, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
   }))
-  on('session.cwd', () => ({ value: CWD }))
+  on('session.cwd', () => ({ value: currentCwd }))
   on('session.id', () => ({ value: sessionId }))
   on('session.messages', () => ({ value: [] }))
   on('session.usage', () => ({
@@ -357,6 +361,28 @@ test('a relative CLAUDE_MULTI_ACCOUNT_HOME is taken from the home folder', async
   expect(resolveBase('C:\\cma', 'C:\\Users\\t')).toBe('C:\\cma')
   expect(resolveBase(undefined, '/Users/t')).toBe('/Users/t/.claude-multi-account')
   expect(expand('~\\.claude-acme', 'C:\\Users\\t')).toBe('C:\\Users\\t/.claude-acme')
+})
+
+test('a cd to a folder without a rule does not change where new conversations in the session\'s folder run', async ($, on) => {
+  const statuses: (string | undefined)[] = []
+  on('ui.status', ($, e) => {
+    statuses.push(e.text)
+    return { value: undefined }
+  })
+  const files = signedIn()
+  files[`${BASE}/folders`] = `*\tpersonal\n${CWD}\tacme\n`
+  const clock = world(on, files, 's-cd', [], { CLAUDE_CODE_ENTRYPOINT: 'claude-vscode' })
+  await start($)
+  expect(statuses.at(-1)).toBe('Claude account: acme (me@acme.test)')
+
+  // The session works in a scratch folder that only the "*" rule covers.
+  currentCwd = '/private/tmp/scratch'
+  await clock.advance(5_000)
+  expect(statuses.at(-1)).toBe('Claude account: acme (me@acme.test)')
+  const status = JSON.parse(files[`${BASE}/sessions/s-cd.json`] ?? '{}')
+  expect(status.cwd).toBe(CWD)
+  const shown = await $.command.run({ command: 'account', args: '' } as never)
+  expect(JSON.stringify(shown)).not.toContain('runs on personal')
 })
 
 test('once this session\'s account is removed, the chat line says where new conversations go', async ($, on) => {
