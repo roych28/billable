@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.1
+
+- **Claude Code's Account & Usage follows the folder's account.** Claude Code reads the account once per window, in VS Code's own process, so after a folder moved to another account it kept showing the old one (the conversations already ran on the new one). Billable now makes it read the account again; when the old account is the default one, which only a window reload refreshes, it offers `Reload window`.
+- **The chat line names the right account after a `cd`.** A session that moved to a folder without a rule (a scratch folder, say) said new conversations in the folder run on the default account; the line, the handoff note and the session status now follow the folder the session started in.
+
 ## 0.8.0
 
 - **Billable Pro is on.** The cost report's full history (beyond the current and the previous month) and the CSV export now take a license key: `Get Pro` opens the checkout, `Billable: Enter license key` activates a key on this machine (up to three machines per key), and the report the user asked for opens right after. The key is checked again once a week.

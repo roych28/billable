@@ -7,6 +7,7 @@ const vscode = require('vscode')
 const tmp = process.env.CMA_TEST_ROOT
 const base = process.env.CLAUDE_MULTI_ACCOUNT_HOME
 const workspace = path.join(tmp, 'work', 'app')
+const claudeCodeLogin = path.join(tmp, 'claude-code-login.json')
 
 async function until(what, fn, ms = 5000) {
   const end = Date.now() + ms
@@ -28,6 +29,9 @@ check('the extension activates and registers every command', async () => {
   const ext = vscode.extensions.getExtension('roychemo.billable')
   api = await ext.activate()
   api.setPluginInstaller(async dir => pluginInstalls.push(dir))
+  // The login file Claude Code would watch: a stand-in, signed in as nobody the tests switch away from.
+  fs.writeFileSync(claudeCodeLogin, JSON.stringify({ oauthAccount: { emailAddress: 'nobody@test' } }))
+  api.setClaudeCodeLoginFile(claudeCodeLogin)
   // The test accounts have no plugin anywhere, so nothing is installed on its own.
   await api.pluginHealed()
   assert.deepStrictEqual(pluginInstalls, [])
@@ -117,6 +121,43 @@ check('once a conversation runs on the new account the warning goes away and its
   assert.ok(s.text.startsWith('$(account) personal'), s.text)
   assert.ok(s.text.includes('$0.25'), s.text)
   assert.ok(!s.text.includes('$(warning)'), s.text)
+})
+
+check('after the folder moves to another account, Claude Code is made to read the account again, or a reload is offered', async () => {
+  const foldersFile = path.join(base, 'folders')
+  const saved = fs.readFileSync(foldersFile, 'utf8')
+  const rule = name => fs.writeFileSync(foldersFile, `*\tpersonal\n${path.dirname(workspace)}\t${name}\n`)
+  // Start from acme, whatever an earlier check left the folder on.
+  rule('acme')
+  await vscode.commands.executeCommand('claudeMultiAccount.refresh')
+  assert.ok(api.statusBar().text.startsWith('$(account) acme'), api.statusBar().text)
+  const info = answer('showInformationMessage', undefined)
+  try {
+    // acme is not the account in Claude Code's login file: a touch of the file is enough, and nothing is asked.
+    const past = new Date(Date.now() - 3_600_000)
+    fs.utimesSync(claudeCodeLogin, past, past)
+    const text = fs.readFileSync(claudeCodeLogin, 'utf8')
+    rule('personal')
+    await vscode.commands.executeCommand('claudeMultiAccount.refresh')
+    await until('the login file touched', () => fs.statSync(claudeCodeLogin).mtimeMs > past.getTime() + 1000)
+    assert.strictEqual(fs.readFileSync(claudeCodeLogin, 'utf8'), text, 'a touch changes no byte')
+    assert.strictEqual(info.seen.length, 0, info.seen.map(s => s[0]).join(' | '))
+
+    // personal is the account in that file, as a folder leaving the default account: only a reload refreshes it.
+    fs.writeFileSync(claudeCodeLogin, JSON.stringify({ oauthAccount: { emailAddress: 'me@example.test' } }))
+    fs.utimesSync(claudeCodeLogin, past, past)
+    rule('acme')
+    await vscode.commands.executeCommand('claudeMultiAccount.refresh')
+    await until('the reload offer', () => info.seen.length > 0)
+    assert.match(info.seen[0][0], /^app now runs on acme, but Claude Code's Account & Usage in this window still shows personal \(me@example\.test\)/)
+    assert.deepStrictEqual(info.seen[0].slice(1), ['Reload window'])
+    assert.ok(fs.statSync(claudeCodeLogin).mtimeMs < past.getTime() + 1000, 'a touch would not help, so the file is left alone')
+  } finally {
+    info.restore()
+    fs.writeFileSync(claudeCodeLogin, JSON.stringify({ oauthAccount: { emailAddress: 'nobody@test' } }))
+    fs.writeFileSync(foldersFile, saved)
+    await vscode.commands.executeCommand('claudeMultiAccount.refresh')
+  }
 })
 
 check('an account that is not signed in is marked in the hover', async () => {

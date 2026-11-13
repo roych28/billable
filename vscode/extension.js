@@ -66,6 +66,8 @@ function activate(context) {
   const plugin = { install: dir => installPlugin(p, dir) }
   // Replaced by the integration tests, which sign in with a stand-in for claude in a real terminal.
   const login = { claude: claudePath }
+  // Replaced by the integration tests, which must not touch the login file of the machine they run on.
+  const claudeCode = { loginFile: () => lib.watchedLoginFile(p.home) }
 
   const item = vscode.window.createStatusBarItem('claudeMultiAccount', vscode.StatusBarAlignment.Left, 100)
   item.name = 'Billable'
@@ -290,7 +292,7 @@ function activate(context) {
     const old = v.accounts.find(a => a.name === loadedAccount)
     const oldName = loadedAccount
     loadedAccount = v.currentName
-    const file = lib.watchedLoginFile(p.home)
+    const file = claudeCode.loginFile()
     const oldEmail = old ? lib.emailOf(old.dir, p.home) : null
     if (lib.staleAccountFix(oldEmail, lib.emailInFile(file)) === 'touch') {
       lib.touch(file)
@@ -925,6 +927,7 @@ function activate(context) {
     setPluginInstaller: install => (plugin.install = install),
     setClaude: file => (login.claude = file ? () => file : claudePath),
     setLicense: l => (license = l),
+    setClaudeCodeLoginFile: file => (claudeCode.loginFile = file ? () => file : () => lib.watchedLoginFile(p.home)),
   }
 }
 
