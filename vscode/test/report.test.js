@@ -103,11 +103,20 @@ test('a paid key survives an outage, a rate limit and a broken answer at the wee
   assert.strictEqual(await secrets.get('claudeMultiAccount.license'), undefined, '"not valid" drops the key')
 })
 
-test('the shipped PRODUCT points at the Billable Pro store and product', () => {
+test('the shipped build opens Pro to everyone and offers no checkout until the store is live', async () => {
   const { PRODUCT } = require('../pro')
-  assert.strictEqual(PRODUCT.storeId, 501065)
-  assert.strictEqual(PRODUCT.productId, 1450746)
-  assert.match(PRODUCT.checkoutUrl, /^https:\/\/claude-multi-account\.lemonsqueezy\.com\/checkout\/buy\//)
+  assert.strictEqual(PRODUCT, null, 'a published Get Pro must not lead to a checkout that takes no money')
+  const l = createLicense({ secrets: memorySecrets() })
+  assert.strictEqual(l.isLaunch, true)
+  assert.strictEqual(l.checkoutUrl, null)
+  assert.strictEqual(await l.isPro(), true)
+})
+
+test('LEMON keeps the Billable Pro store and product for when the store goes live', () => {
+  const { LEMON } = require('../pro')
+  assert.strictEqual(LEMON.storeId, 501065)
+  assert.strictEqual(LEMON.productId, 1450746)
+  assert.match(LEMON.checkoutUrl, /^https:\/\/claude-multi-account\.lemonsqueezy\.com\/checkout\/buy\//)
 })
 
 test('the CSV export survives a ledger entry without updatedAt, and its timestamps agree with the month column', () => {

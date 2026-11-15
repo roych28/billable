@@ -51,7 +51,7 @@ Each shared item becomes a link to the default account's copy. What the account 
 
 ## Pro
 
-Pro adds the full history of the cost report, beyond the current and the previous month, and CSV export for invoices. It is $5 a month or $48 a year, one license key per subscription, good for three machines. `Get Pro` in the report opens the checkout, and `Billable: Enter license key` unlocks Pro on your machine. The key is checked once a week; without a network connection Pro stays on.
+Pro adds the full history of the cost report, beyond the current and the previous month, and CSV export for invoices. For now every Pro feature is free for everyone, with no key and no sign-up. A paid Pro may come later; whatever you use today stays yours.
 
 ## Getting started
 
@@ -129,7 +129,7 @@ macOS, Linux or Windows, with Claude Code installed. The launcher is a shell scr
 
 ## Privacy
 
-Everything stays on your machine. The extension reads Claude Code's local config, session files and transcripts, lists processes with `ps`, and writes only to `~/.claude-multi-account`. It signals a Claude Code process only when you stop a session, or when you turn on automatic stopping. The only network calls are to the license server, with your key: when you enter a Pro license key, and once a week after that.
+Everything stays on your machine. The extension reads Claude Code's local config, session files and transcripts, lists processes with `ps`, and writes only to `~/.claude-multi-account`. It signals a Claude Code process only when you stop a session, or when you turn on automatic stopping. The extension itself makes no network calls; when an account lacks the companion plugin, it asks Claude Code to install it from the plugin's marketplace.
 
 ## Support
 
