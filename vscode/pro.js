@@ -1,10 +1,12 @@
 // Pro is sold through Lemon Squeezy's license API, which needs no secret on our side: a key is activated
 // for this machine once and checked again every week. With PRODUCT null, every Pro feature is open to everyone.
-const PRODUCT = {
+const LEMON = {
   storeId: 501065,
   productId: 1450746,
   checkoutUrl: 'https://claude-multi-account.lemonsqueezy.com/checkout/buy/34db480b-176b-4f10-91e0-9fa27f6fdac6',
 }
+// Pro stays open to everyone until the Lemon Squeezy store is live; then PRODUCT = LEMON (check the live ids first).
+const PRODUCT = null
 const API = 'https://api.lemonsqueezy.com/v1/licenses'
 const RECHECK_MS = 7 * 24 * 60 * 60 * 1000
 const KEY = 'claudeMultiAccount.license'
@@ -79,4 +81,4 @@ function createLicense({ secrets, product = PRODUCT, fetchImpl = fetch, now = ()
   }
 }
 
-module.exports = { createLicense, PRODUCT }
+module.exports = { createLicense, PRODUCT, LEMON }

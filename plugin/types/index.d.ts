@@ -3,6 +3,8 @@ export type ClaudeMultiAccountAccount = { name: string; dir: string; email: stri
 export type ClaudeMultiAccountInfo = {
   current: ClaudeMultiAccountAccount
   others: ClaudeMultiAccountAccount[]
+  /** The folder the session started in: the launcher picks the account from it. */
+  cwd: string
   folder: string
   transcript: string
 }

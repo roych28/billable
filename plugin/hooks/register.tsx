@@ -164,6 +164,7 @@ async function loadInfo($: EngineInterface, cwd: string): Promise<ClaudeMultiAcc
   return {
     current,
     others: list.filter(a => pathKey(a.dir) !== pathKey(current.dir) && a.email !== NOT_SIGNED_IN),
+    cwd,
     folder: await folderRoot($, cwd),
     transcript: `${dir}/projects/${keyOf(cwd)}/${sessionId}.jsonl`,
   }
@@ -193,7 +194,9 @@ async function writeHandoff($: EngineInterface, summary?: string): Promise<void>
   const messages = await $.session.messages()
   const lastRequest = [...messages].reverse().find(m => m.role === 'user' && m.text.trim() !== '')
   const lastAnswer = [...messages].reverse().find(m => m.role === 'assistant' && m.text.trim() !== '')
-  const cwd = await $.session.cwd()
+  // The folder the session started in, which is where the next session there reads the note: a `cd` during the
+  // session (to a scratch folder, say) must not send the note elsewhere.
+  const cwd = i.cwd
   const previous = await readHandoff($, cwd)
   // A note written at a switch by another session waits for the new session it was written for; another session
   // still at work in this folder on the old account must not replace it with its own last turn.
@@ -224,7 +227,7 @@ async function writeStatus($: EngineInterface): Promise<void> {
   const sessionId = await $.session.id()
   const status = {
     sessionId,
-    cwd: await $.session.cwd(),
+    cwd: i.cwd,
     folder: i.folder,
     transcript: i.transcript,
     account: { name: i.current.name, email: i.current.email },
@@ -304,8 +307,8 @@ async function switchTo($: EngineInterface, name: string): Promise<string> {
   if (name !== 'auto' && !list.some(a => a.name === name)) {
     return `Unknown account: ${name}. Known: ${list.map(a => a.name).join(', ')}, or auto.`
   }
-  // The launcher picks the account from the session's own folder, so that is what the switch has to reach.
-  const cwd = await $.session.cwd()
+  // The launcher picks the account from the folder the session started in, so that is what the switch has to reach.
+  const cwd = i.cwd
   const target = pinTarget(i.folder, cwd, await rules($))
   await pin($, target, name)
   const next = accountFor(cwd, await rules($))
@@ -358,7 +361,9 @@ async function refresh($: EngineInterface): Promise<void> {
   const current = listed ?? i.current
   const others = list.filter(a => pathKey(a.dir) !== pathKey(current.dir) && a.email !== NOT_SIGNED_IN)
   await update($, info, () => ({ ...i, current, others }))
-  const ruled = accountFor(await $.session.cwd(), await rules($))
+  // The folder the session started in, as the launcher reads it: after a `cd` to a folder without a rule, the current
+  // folder would fall to the "*" rule and name an account no new conversation here runs on.
+  const ruled = accountFor(i.cwd, await rules($))
   // This session's account was removed, and its rules with it: new conversations here go back to ~/.claude.
   const h = await home($)
   const fallback = listed ? null : (list.find(a => pathKey(a.dir) === pathKey(`${h}/.claude`))?.name ?? 'the default account')

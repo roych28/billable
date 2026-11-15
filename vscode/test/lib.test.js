@@ -888,3 +888,34 @@ test('emailOf treats any spelling of ~/.claude as the default folder', () => {
   assert.strictEqual(lib.emailOf(path.join(p.home, '.claude'), p.home), 'me@home.test')
   assert.strictEqual(lib.emailOf(path.join(p.home, '.claude-x'), p.home), lib.NOT_SIGNED_IN)
 })
+
+test('Claude Code watches the default login file unless VS Code itself has a CLAUDE_CONFIG_DIR', () => {
+  assert.strictEqual(lib.watchedLoginFile('/Users/t', {}), path.join('/Users/t', '.claude.json'))
+  assert.strictEqual(lib.watchedLoginFile('/Users/t', { CLAUDE_CONFIG_DIR: '~/.claude-acme' }), path.join('/Users/t', '.claude-acme', '.claude.json'))
+})
+
+test('a folder leaving the account in the watched login file needs a reload; any other move is a touch of that file', () => {
+  // Claude Code skips a refresh while the file holds the email it already has: the old account's.
+  assert.strictEqual(lib.staleAccountFix('me@work.test', 'me@work.test'), 'reload')
+  assert.strictEqual(lib.staleAccountFix('Me@Work.test', 'me@work.test'), 'reload')
+  assert.strictEqual(lib.staleAccountFix('me@home.test', 'me@work.test'), 'touch')
+  assert.strictEqual(lib.staleAccountFix(null, 'me@work.test'), 'touch')
+  assert.strictEqual(lib.staleAccountFix(lib.NOT_SIGNED_IN, 'me@work.test'), 'touch')
+  assert.strictEqual(lib.staleAccountFix('me@home.test', null), 'touch')
+})
+
+test('touch changes the time of the login file and not a byte of it', () => {
+  const p = sandbox()
+  const file = path.join(p.home, '.claude.json')
+  const text = JSON.stringify({ oauthAccount: { emailAddress: 'me@work.test' } })
+  fs.writeFileSync(file, text)
+  const past = new Date(Date.now() - 3_600_000)
+  fs.utimesSync(file, past, past)
+  assert.strictEqual(lib.touch(file), true)
+  assert.ok(fs.statSync(file).mtimeMs > past.getTime() + 1000)
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), text)
+  assert.strictEqual(lib.emailInFile(file), 'me@work.test')
+  assert.strictEqual(lib.touch(path.join(p.home, 'missing.json')), false)
+  assert.strictEqual(fs.existsSync(path.join(p.home, 'missing.json')), false)
+  assert.strictEqual(lib.emailInFile(path.join(p.home, 'missing.json')), null)
+})

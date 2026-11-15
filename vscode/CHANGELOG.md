@@ -1,8 +1,14 @@
 # Changelog
 
+## 0.8.1
+
+- **Every Pro feature is free for now.** The full history of the cost report and the CSV export are open to everyone, with no license key; `Get Pro` is gone until a paid Pro is ready.
+- **Claude Code's Account & Usage follows the folder's account.** Claude Code reads the account once per window, in VS Code's own process, so after a folder moved to another account it kept showing the old one (the conversations already ran on the new one). Billable now makes it read the account again; when the old account is the default one, which only a window reload refreshes, it offers `Reload window`.
+- **The chat line names the right account after a `cd`.** A session that moved to a folder without a rule (a scratch folder, say) said new conversations in the folder run on the default account; the line, the handoff note and the session status now follow the folder the session started in.
+
 ## 0.8.0
 
-- **Billable Pro is on.** The cost report's full history (beyond the current and the previous month) and the CSV export now take a license key: `Get Pro` opens the checkout, `Billable: Enter license key` activates a key on this machine (up to three machines per key), and the report the user asked for opens right after. The key is checked again once a week.
+- **Billable Pro is on** (never released: 0.8.1 opens Pro to everyone). The cost report's full history (beyond the current and the previous month) and the CSV export now take a license key: `Get Pro` opens the checkout, `Billable: Enter license key` activates a key on this machine (up to three machines per key), and the report the user asked for opens right after. The key is checked again once a week.
 - A paid key is never dropped by an outage, a rate limit or a broken answer from the license server at the weekly check; only the server saying the key is not valid does that.
 - `Billable: Enter license key` says when Pro is already active on this machine, and ignores a blank key.
 - **Sharing never eats the default account's own folder.** An account whose folder is, or links to, the default account's folder (an accounts file written by hand) is not offered sharing, and a saved choice for one is skipped; it used to move the conversations into a backup and leave a link pointing at itself.
