@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **The license check speaks Polar** (polar.sh, the merchant of record) instead of Lemon Squeezy, which closed to new stores. Same behaviour: a key is activated once per machine (up to three), checked again weekly, kept through an outage, a rate limit or a broken answer, and dropped only when Polar says it is not found, revoked, disabled, expired or for another product. A key for another product gives its activation back. Pro stays open to everyone in this build.
+
 ## 0.9.0
 
 - **A sign-in that ended shows as signed out.** A Claude sign-in has a fixed end and cannot be renewed after it; Claude Code then drops its tokens, but the email stays in `.claude.json`, so Billable kept showing the account as signed in while every conversation on it stopped with a sign-in prompt. Billable now asks `claude auth status` for each account (every ten minutes, sooner for a signed-out one, and right after a sign-in) and believes that over the email. The status bar turns red with `<account> signed out`, the hover offers `Sign in to <account> again` and a switch to an account that still works, and one notification per window says the same.
