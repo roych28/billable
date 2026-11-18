@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.2
+
+- **The status bar names the account of the conversation in front.** With a Claude Code tab in front, the account, tokens, cost and limits are that conversation's, the account it really runs on, also when it started before the folder moved to another account; the hover says which account a new conversation in the folder starts on. A new, untitled tab, or no conversation tab yet, shows the folder's account as before. The tab is matched to its session by the title Claude Code gives it.
+
 ## 0.8.1
 
 - **Every Pro feature is free for now.** The full history of the cost report and the CSV export are open to everyone, with no license key; `Get Pro` is gone until a paid Pro is ready.

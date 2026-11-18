@@ -760,6 +760,55 @@ check('an account shares conversations and memory with the default one, then sto
   }
 })
 
+check('the status bar names the account of the conversation in the active Claude Code tab', async () => {
+  const foldersFile = path.join(base, 'folders')
+  const saved = fs.readFileSync(foldersFile, 'utf8')
+  fs.writeFileSync(foldersFile, `*\tpersonal\n${path.dirname(workspace)}\tpersonal\n`)
+  const transcript = path.join(tmp, 'claude-acme', 'projects', 'x', 's-tab.jsonl')
+  fs.mkdirSync(path.dirname(transcript), { recursive: true })
+  fs.writeFileSync(transcript, JSON.stringify({ type: 'ai-title', aiTitle: 'Clinic video on the old account' }) + '\n')
+  fs.writeFileSync(
+    path.join(base, 'sessions', 's-tab.json'),
+    JSON.stringify({
+      sessionId: 's-tab', cwd: workspace, folder: workspace, transcript,
+      account: { name: 'acme', email: 'me@acme.test' }, others: [],
+      usage: { usd: 3.25, limits: [{ kind: 'seven_day', percentUsed: 80 }] }, next: null, updatedAt: Date.now() - 60_000,
+    }),
+  )
+  // Claude Code's conversation tabs are webview panels of this type, titled the way it cuts a session title.
+  const tab = vscode.window.createWebviewPanel('claudeVSCodePanel', 'Clinic video on the old …', vscode.ViewColumn.One, {})
+  try {
+    const s = await until('the status bar on the tab account', () => {
+      const b = api.statusBar()
+      return b.text.startsWith('$(account) acme') && b
+    })
+    assert.ok(s.text.includes('$3.25') && s.text.includes('80%'), s.text)
+    assert.ok(!s.text.includes('$(warning) chat on'), s.text)
+    assert.ok(s.tooltip.includes('This conversation runs on **acme**. New conversations in this folder start on **personal**'), s.tooltip)
+    // A new, untitled conversation runs on the folder account.
+    const fresh = vscode.window.createWebviewPanel('claudeVSCodePanel', 'Claude Code', vscode.ViewColumn.One, {})
+    try {
+      await until('the status bar back on the folder account', () => api.statusBar().text.startsWith('$(account) personal'))
+    } finally {
+      fresh.dispose()
+    }
+    // A panel of another extension is not a conversation.
+    tab.reveal()
+    await until('the tab account again', () => api.statusBar().text.startsWith('$(account) acme'))
+    const other = vscode.window.createWebviewPanel('somethingElse', 'Personal', vscode.ViewColumn.One, {})
+    try {
+      await new Promise(r => setTimeout(r, 300))
+      assert.ok(api.statusBar().text.startsWith('$(account) acme'), api.statusBar().text)
+    } finally {
+      other.dispose()
+    }
+  } finally {
+    tab.dispose()
+    fs.rmSync(path.join(base, 'sessions', 's-tab.json'), { force: true })
+    fs.writeFileSync(foldersFile, saved)
+  }
+})
+
 check('remove account never offers the default account, ~/.claude or a folder two accounts use', async () => {
   const accountsFile = path.join(base, 'accounts')
   const saved = fs.readFileSync(accountsFile, 'utf8')
