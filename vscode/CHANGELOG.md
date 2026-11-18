@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **The license check speaks Polar** (polar.sh, the merchant of record) instead of Lemon Squeezy, which closed to new stores. Same behaviour: a key is activated once per machine (up to three), checked again weekly, kept through an outage, a rate limit or a broken answer, and dropped only when Polar says it is not found, revoked, disabled, expired or for another product. A key for another product gives its activation back. Pro stays open to everyone in this build.
+
 ## 0.8.1
 
 - **Every Pro feature is free for now.** The full history of the cost report and the CSV export are open to everyone, with no license key; `Get Pro` is gone until a paid Pro is ready.

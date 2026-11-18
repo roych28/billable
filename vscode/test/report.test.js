@@ -56,67 +56,101 @@ test('without a store every Pro feature is open', async () => {
   assert.strictEqual(l.isLaunch, true)
 })
 
+const PRODUCT = { organizationId: 'org1', benefitId: 'ben1', checkoutUrl: 'https://example.test/buy' }
+const keyObj = (over = {}) => ({ organization_id: 'org1', benefit_id: 'ben1', status: 'granted', expires_at: null, ...over })
+const reply = (status, json) => ({ status, json: async () => json })
+
 test('a license key unlocks Pro only when it belongs to our product, and is checked again weekly', async () => {
-  const product = { storeId: 7, productId: 42, checkoutUrl: 'https://example.test/buy' }
   let now = 0
   let valid = true
   const calls = []
   const fetchImpl = async (url, init) => {
-    calls.push(url)
-    const meta = { store_id: 7, product_id: url.endsWith('activate') && init.body.includes('other') ? 99 : 42 }
-    if (url.endsWith('activate')) return { json: async () => ({ activated: true, instance: { id: 'i1' }, meta }) }
-    return { json: async () => ({ valid, meta }) }
+    const body = JSON.parse(init.body)
+    calls.push(url.split('/').pop())
+    if (url.endsWith('/activate')) return reply(200, { id: 'a1', license_key: keyObj(body.key === 'other-key' ? { benefit_id: 'ben9' } : {}) })
+    if (url.endsWith('/deactivate')) return reply(204, null)
+    return reply(200, keyObj(valid ? {} : { status: 'revoked' }))
   }
-  const l = createLicense({ secrets: memorySecrets(), product, fetchImpl, now: () => now })
+  const l = createLicense({ secrets: memorySecrets(), product: PRODUCT, fetchImpl, now: () => now })
   assert.strictEqual(await l.isPro(), false)
   assert.deepStrictEqual(await l.activate('other-key', 'mac'), { ok: false, error: 'This key is for a different product' })
+  assert.strictEqual(calls.at(-1), 'deactivate', 'a key for another product gives its activation back')
   assert.strictEqual(await l.isPro(), false)
   assert.deepStrictEqual(await l.activate('good-key', 'mac'), { ok: true })
   assert.strictEqual(await l.isPro(), true)
-  assert.strictEqual(calls.filter(c => c.endsWith('validate')).length, 0)
+  assert.strictEqual(calls.filter(c => c === 'validate').length, 0)
   now = 8 * 24 * 60 * 60 * 1000
   valid = false
   assert.strictEqual(await l.isPro(), false)
-  assert.strictEqual(calls.filter(c => c.endsWith('validate')).length, 1)
+  assert.strictEqual(calls.filter(c => c === 'validate').length, 1)
 })
 
-test('a paid key survives an outage, a rate limit and a broken answer at the weekly check, and only "not valid" drops it', async () => {
-  const product = { storeId: 7, productId: 42, checkoutUrl: 'https://example.test/buy' }
+test('the weekly check sends the key, the organization and this machine\'s activation', async () => {
   let now = 0
-  let answer = () => ({ valid: true, meta: { store_id: 7, product_id: 42 } })
+  const bodies = []
+  const fetchImpl = async (url, init) => {
+    bodies.push([url.split('/').pop(), JSON.parse(init.body)])
+    return url.endsWith('/activate') ? reply(201, { id: 'a7', license_key: keyObj() }) : reply(200, keyObj())
+  }
+  const l = createLicense({ secrets: memorySecrets(), product: PRODUCT, fetchImpl, now: () => now })
+  assert.deepStrictEqual(await l.activate('  BILL-123  ', 'mac (VS Code)'), { ok: true })
+  assert.deepStrictEqual(bodies[0], ['activate', { key: 'BILL-123', organization_id: 'org1', label: 'mac (VS Code)' }])
+  now = 8 * 24 * 60 * 60 * 1000
+  assert.strictEqual(await l.isPro(), true)
+  assert.deepStrictEqual(bodies[1], ['validate', { key: 'BILL-123', organization_id: 'org1', activation_id: 'a7' }])
+})
+
+test('a paid key survives an outage, a rate limit and a broken answer at the weekly check, and only "not good" drops it', async () => {
+  let now = 0
+  let answer = () => reply(200, keyObj())
   const secrets = memorySecrets()
-  const fetchImpl = async url => ({
-    json: async () => (url.endsWith('activate') ? { activated: true, instance: { id: 'i1' }, meta: { store_id: 7, product_id: 42 } } : answer()),
-  })
-  const l = createLicense({ secrets, product, fetchImpl, now: () => now })
+  const fetchImpl = async url => (url.endsWith('/activate') ? reply(200, { id: 'a1', license_key: keyObj() }) : answer())
+  const l = createLicense({ secrets, product: PRODUCT, fetchImpl, now: () => now })
   assert.deepStrictEqual(await l.activate('good-key', 'mac'), { ok: true })
   const week = 8 * 24 * 60 * 60 * 1000
-  for (const broken of [() => ({ error: 'Too many requests' }), () => ({}), () => null, () => { throw new Error('offline') }]) {
+  const broken = [
+    () => reply(429, { error: 'TooManyRequests' }),
+    () => reply(500, null),
+    () => reply(200, {}),
+    () => reply(200, null),
+    () => ({ status: 200, json: async () => { throw new SyntaxError('bad json') } }),
+    () => { throw new Error('offline') },
+  ]
+  for (const b of broken) {
     now += week
-    answer = broken
+    answer = b
     assert.strictEqual(await l.isPro(), true, 'a broken answer keeps Pro')
     assert.ok(await secrets.get('claudeMultiAccount.license'), 'and keeps the key')
   }
-  now += week
-  answer = () => ({ valid: false, error: 'license_key not found.' })
-  assert.strictEqual(await l.isPro(), false)
-  assert.strictEqual(await secrets.get('claudeMultiAccount.license'), undefined, '"not valid" drops the key')
+  for (const [label, bad] of [
+    ['not found', () => reply(404, { error: 'ResourceNotFound', detail: 'Not found' })],
+    ['disabled', () => reply(200, keyObj({ status: 'disabled' }))],
+    ['expired', () => reply(200, keyObj({ expires_at: new Date(now - 1000).toISOString() }))],
+    ['another product', () => reply(200, keyObj({ organization_id: 'org9' }))],
+  ]) {
+    await secrets.store('claudeMultiAccount.license', JSON.stringify({ key: 'good-key', activationId: 'a1', checkedAt: now }))
+    now += week
+    answer = bad
+    assert.strictEqual(await l.isPro(), false, label)
+    assert.strictEqual(await secrets.get('claudeMultiAccount.license'), undefined, `${label} drops the key`)
+  }
 })
 
-test('the shipped build opens Pro to everyone and offers no checkout until the store is live', async () => {
-  const { PRODUCT } = require('../pro')
-  assert.strictEqual(PRODUCT, null, 'a published Get Pro must not lead to a checkout that takes no money')
+test('the shipped build opens Pro to everyone and offers no checkout until Polar can take payments', async () => {
+  const { PRODUCT: shipped } = require('../pro')
+  assert.strictEqual(shipped, null, 'a published Get Pro must not lead to a checkout that cannot take money')
   const l = createLicense({ secrets: memorySecrets() })
   assert.strictEqual(l.isLaunch, true)
   assert.strictEqual(l.checkoutUrl, null)
   assert.strictEqual(await l.isPro(), true)
 })
 
-test('LEMON keeps the Billable Pro store and product for when the store goes live', () => {
-  const { LEMON } = require('../pro')
-  assert.strictEqual(LEMON.storeId, 501065)
-  assert.strictEqual(LEMON.productId, 1450746)
-  assert.match(LEMON.checkoutUrl, /^https:\/\/claude-multi-account\.lemonsqueezy\.com\/checkout\/buy\//)
+test('POLAR keeps the Billable Pro organization, benefit and checkout links for when payments open', () => {
+  const { POLAR } = require('../pro')
+  assert.strictEqual(POLAR.organizationId, 'b4a6e709-f945-4dcf-81f5-767edb390e1b')
+  assert.strictEqual(POLAR.benefitId, '6d6ba72a-7faa-443b-b23b-42c97fba76d4')
+  assert.match(POLAR.checkoutUrl, /^https:\/\/buy\.polar\.sh\/polar_cl_/)
+  assert.match(POLAR.yearlyCheckoutUrl, /^https:\/\/buy\.polar\.sh\/polar_cl_/)
 })
 
 test('the CSV export survives a ledger entry without updatedAt, and its timestamps agree with the month column', () => {
@@ -138,37 +172,40 @@ test('a path that merely starts with the home string is not shortened to ~', () 
 })
 
 test('a checkedAt in the future forces a re-validation', async () => {
-  const product = { storeId: 7, productId: 42, checkoutUrl: 'https://example.test/buy' }
   const secrets = memorySecrets()
   const calls = []
   const fetchImpl = async url => {
-    calls.push(url)
-    return { json: async () => (url.endsWith('activate') ? { activated: true, instance: { id: 'i1' }, meta: { store_id: 7, product_id: 42 } } : { valid: false }) }
+    calls.push(url.split('/').pop())
+    return url.endsWith('/activate') ? reply(200, { id: 'a1', license_key: keyObj() }) : reply(200, keyObj({ status: 'revoked' }))
   }
   let now = 10 * 24 * 3_600_000
-  const l = createLicense({ secrets, product, fetchImpl, now: () => now })
+  const l = createLicense({ secrets, product: PRODUCT, fetchImpl, now: () => now })
   await l.activate('good-key', 'mac')
   now -= 3 * 24 * 3_600_000 // the clock was moved back
   assert.strictEqual(await l.isPro(), false)
-  assert.strictEqual(calls.filter(c => c.endsWith('validate')).length, 1)
+  assert.strictEqual(calls.filter(c => c === 'validate').length, 1)
 })
 
-test('activation reports a malformed answer or a failing secret store as such, and gives the activation back', async () => {
-  const product = { storeId: 7, productId: 42, checkoutUrl: 'https://example.test/buy' }
+test('activation reports a refused key, a malformed answer or a failing secret store as such, and gives the activation back', async () => {
   const calls = []
-  let instance = undefined
+  let answer = () => reply(403, { error: 'NotPermitted', detail: 'License key only allows 3 activations.' })
   const fetchImpl = async (url, init) => {
-    calls.push([url.split('/').pop(), init.body])
-    return { json: async () => ({ activated: true, instance, meta: { store_id: 7, product_id: 42 } }) }
+    calls.push([url.split('/').pop(), JSON.parse(init.body)])
+    return url.endsWith('/deactivate') ? reply(204, null) : answer()
   }
-  const noInstance = createLicense({ secrets: memorySecrets(), product, fetchImpl })
-  assert.deepStrictEqual(await noInstance.activate('k', 'mac'), { ok: false, error: 'The license server gave an answer without an instance id' })
-  instance = { id: 'i9' }
+  const make = secrets => createLicense({ secrets, product: PRODUCT, fetchImpl })
+  assert.deepStrictEqual(await make(memorySecrets()).activate('k', 'mac'), { ok: false, error: 'License key only allows 3 activations.' })
+  answer = () => reply(404, { error: 'ResourceNotFound', detail: 'Not found' })
+  assert.match((await make(memorySecrets()).activate('k', 'mac')).error, /not found/)
+  answer = () => reply(200, { license_key: keyObj() })
+  assert.deepStrictEqual(await make(memorySecrets()).activate('k', 'mac'), { ok: false, error: 'The license server gave an answer without an activation id' })
+  answer = () => reply(200, { id: 'a9', license_key: keyObj({ status: 'revoked' }) })
+  assert.deepStrictEqual(await make(memorySecrets()).activate('k', 'mac'), { ok: false, error: 'This key is no longer active' })
+  assert.deepStrictEqual(calls.at(-1), ['deactivate', { key: 'k', organization_id: 'org1', activation_id: 'a9' }])
+  answer = () => reply(200, { id: 'a10', license_key: keyObj() })
   const broken = { get: async () => undefined, store: async () => { throw new Error('keyring unavailable') }, delete: async () => {} }
-  const r = await createLicense({ secrets: broken, product, fetchImpl }).activate('k', 'mac')
+  const r = await make(broken).activate('k', 'mac')
   assert.strictEqual(r.ok, false)
   assert.match(r.error, /could not keep it: keyring unavailable/)
-  const last = calls[calls.length - 1]
-  assert.strictEqual(last[0], 'deactivate')
-  assert.ok(last[1].includes('instance_id=i9'), last[1])
+  assert.deepStrictEqual(calls.at(-1), ['deactivate', { key: 'k', organization_id: 'org1', activation_id: 'a10' }])
 })
