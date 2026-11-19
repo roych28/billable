@@ -74,8 +74,24 @@ function activate(context) {
   item.command = 'claudeMultiAccount.switch'
   context.subscriptions.push(item)
 
+  // The label of the Claude Code conversation tab last in front in this window. It stays while a file is in front, so
+  // the status bar keeps naming the conversation being worked in; a new, untitled tab clears it.
+  let claudeTab = null
+  function isClaudeTab(tab) {
+    return tab?.input instanceof vscode.TabInputWebview && String(tab.input.viewType).endsWith('claudeVSCodePanel')
+  }
+  function followActiveTab() {
+    const tab = vscode.window.tabGroups.activeTabGroup?.activeTab
+    if (!isClaudeTab(tab)) return false
+    const label = tab.label === 'Claude Code' ? null : tab.label
+    if (label === claudeTab) return false
+    claudeTab = label
+    return true
+  }
+
   function view() {
-    return lib.folderView(p, folders())
+    followActiveTab()
+    return lib.folderView(p, folders(), process.env, claudeTab)
   }
 
   function tooltip(v) {
@@ -92,7 +108,10 @@ function activate(context) {
         'claude-vscode.newConversation',
       ],
     }
-    md.appendMarkdown(`$(account) **${v.currentName}** &nbsp; ${v.email}\n\n`)
+    md.appendMarkdown(`$(account) **${v.shownName}** &nbsp; ${v.shownEmail}\n\n`)
+    if (v.tab && v.shownName !== v.currentName) {
+      md.appendMarkdown(`This conversation runs on **${v.shownName}**. New conversations in this folder start on **${v.currentName}** (${v.email}).\n\n`)
+    }
 
     const buttons = v.accounts
       .filter(a => a.name !== v.currentName)
@@ -115,7 +134,7 @@ function activate(context) {
       const what = level === 'none' ? `Shares nothing with ${src.name}` : `Shares ${SHARE_LABELS[level].toLowerCase()} with ${src.name}`
       md.appendMarkdown(`$(sync) ${what} &nbsp; ${link('Change', 'claudeMultiAccount.share', [v.currentName])}\n\n`)
     }
-    if (v.openOn) {
+    if (v.openOn && !v.tab) {
       md.appendMarkdown(
         `$(warning) The open conversation still runs on **${v.openOn}**. ${link('Start a new conversation', 'claude-vscode.newConversation', [])} to move it to **${v.currentName}**.\n\n`,
       )
@@ -312,7 +331,7 @@ function activate(context) {
     if (!v) return item.hide()
     followAccount(v)
     warnShared(v.accounts)
-    const parts = [`$(account) ${v.currentName}`]
+    const parts = [`$(account) ${v.shownName}`]
     let top = 0
     if (v.status) {
       const t = lib.sessionTokens(v.status.transcript)
@@ -322,7 +341,7 @@ function activate(context) {
       if (v.status.usage?.usd !== undefined) parts.push(`$(credit-card) $${v.status.usage.usd.toFixed(2)}`)
       if (limits.length) parts.push(`$(dashboard) ${top}%`)
     }
-    if (v.openOn) parts.push(`$(warning) chat on ${v.openOn}`)
+    if (v.openOn && !v.tab) parts.push(`$(warning) chat on ${v.openOn}`)
     item.text = parts.join('   ')
     item.tooltip = tooltip(v)
     item.backgroundColor = top >= WARN_PERCENT ? new vscode.ThemeColor('statusBarItem.warningBackground') : undefined
@@ -875,6 +894,9 @@ function activate(context) {
   const idleTimer = setInterval(() => autoStopIdle().catch(() => {}), IDLE_CHECK_MS)
   context.subscriptions.push({ dispose: () => clearInterval(idleTimer) })
   context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(refresh))
+  // A Claude Code tab coming to the front, or renamed when its title arrives, changes which conversation is shown.
+  const onTabs = () => followActiveTab() && refresh()
+  context.subscriptions.push(vscode.window.tabGroups.onDidChangeTabs(onTabs), vscode.window.tabGroups.onDidChangeTabGroups(onTabs))
   refresh()
 
   // Shared items Claude Code replaced with a file of its own, or that the default account has gained, are linked again.

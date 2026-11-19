@@ -624,7 +624,137 @@ function useDefaultTarget(p, folder, env = process.env) {
   return launchedAccount(p, folder, kept, readAccounts(p), env).name
 }
 
-function folderView(p, roots, env = process.env) {
+// ---- The conversation in the active tab ----
+// Claude Code names a conversation tab after the session's title: its custom title once renamed, else its AI title,
+// cut to 24 characters and an ellipsis past 25. Both are lines of the transcript, so the tab's session is the one
+// whose transcript ends on a title that gives that label.
+
+const titles = new Map()
+
+// Claude Code writes the titles again and again as a session goes on, so the last few MB of a transcript hold the
+// current ones: a first read starts there, since a folder's open transcripts can be hundreds of MB together.
+const TITLE_TAIL = 2 * 1024 * 1024
+
+// Reads the lines of [from, to) of the file and hands each title line to `seen`; returns the unfinished last line.
+function readTitles(file, from, to, tail, seen) {
+  const fd = fs.openSync(file, 'r')
+  try {
+    const buf = Buffer.alloc(Math.min(TRANSCRIPT_CHUNK, Math.max(1, to - from)))
+    let offset = from
+    while (offset < to) {
+      const n = fs.readSync(fd, buf, 0, Math.min(buf.length, to - offset), offset)
+      if (n <= 0) break
+      offset += n
+      const lines = (tail + buf.toString('utf8', 0, n)).split('\n')
+      tail = lines.pop() ?? ''
+      for (const line of lines) {
+        if (!line.includes('-title"')) continue
+        try {
+          const r = JSON.parse(line)
+          if (r.type === 'custom-title' && typeof r.customTitle === 'string') seen('custom', r.customTitle)
+          else if (r.type === 'ai-title' && typeof r.aiTitle === 'string') seen('ai', r.aiTitle)
+        } catch {}
+      }
+    }
+    return tail
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
+// The title Claude Code shows for a transcript: the latest custom title, else the latest AI title, else null. After
+// the first read, only what was appended since is read.
+function sessionTitle(file) {
+  if (!file) return null
+  let size
+  try {
+    size = fs.statSync(file).size
+  } catch {
+    return null
+  }
+  let state = titles.get(file)
+  const latest = (kind, title) => (state[kind] = title)
+  if (!state || size < state.offset) {
+    state = { offset: size, tail: '', custom: null, ai: null }
+    titles.set(file, state)
+    try {
+      const from = Math.max(0, size - TITLE_TAIL)
+      // Started inside a line: the piece before the first newline is not a whole line.
+      const first = from > 0 ? '\u0000' : ''
+      state.tail = readTitles(file, from, size, first, latest)
+      // No title near the end: the whole file, once.
+      if (from > 0 && !state.custom && !state.ai) state.tail = readTitles(file, 0, size, '', latest)
+    } catch {
+      titles.delete(file)
+      return null
+    }
+  } else if (size > state.offset) {
+    try {
+      state.tail = readTitles(file, state.offset, size, state.tail, latest)
+      state.offset = size
+    } catch {
+      return null
+    }
+  }
+  return state.custom || state.ai || null
+}
+
+// The tab label Claude Code gives a title.
+function tabLabel(title) {
+  return title.length > 25 ? title.substring(0, 24) + '…' : title
+}
+
+// The status of the conversation in a Claude Code tab with this label, among the sessions of the window's folder:
+// an open one before a closed one, then the latest. Null when no session's title gives the label (a new, untitled
+// conversation, or a session from before the Billable plugin).
+// A tab whose session stopped (closed by hand, or by Stop idle sessions) still names it for a while.
+const TAB_CLOSED_MS = 48 * 3600_000
+
+function tabStatus(p, roots, label, accounts = readAccounts(p), now = Date.now()) {
+  if (!label) return null
+  let files = []
+  try {
+    files = fs.readdirSync(p.sessions).filter(f => f.endsWith('.json'))
+  } catch {
+    return null
+  }
+  // The sessions running now on each account, read once: a folder keeps the statuses of hundreds of sessions.
+  const running = new Map()
+  // Without a sessions folder (older versions of Claude Code) every session is taken as open, as sessionOpen does.
+  for (const a of accounts) {
+    if (!fs.existsSync(path.join(a.dir, 'sessions'))) continue
+    const ids = new Set()
+    for (const r of readClaudeSessions([a.dir])) if (r.sessionId && pidAlive(r.pid)) ids.add(r.sessionId)
+    running.set(a.name, ids)
+  }
+  const open = []
+  const closed = []
+  for (const f of files) {
+    try {
+      const s = JSON.parse(fs.readFileSync(path.join(p.sessions, f), 'utf8'))
+      if (typeof s.cwd !== 'string' || typeof s.account?.name !== 'string' || typeof s.transcript !== 'string') continue
+      if (!roots.some(r => isInside(s.cwd, r))) continue
+      const ids = running.get(s.account.name)
+      const known = accounts.some(a => a.name === s.account.name)
+      if (known && (!ids || ids.has(s.sessionId))) open.push(s)
+      else if (now - (s.updatedAt ?? 0) < TAB_CLOSED_MS) closed.push(s)
+    } catch {}
+  }
+  // Only these transcripts are read: a folder keeps the statuses of hundreds of old sessions, and reading every
+  // transcript once took seconds on a real machine.
+  for (const group of [open, closed]) {
+    group.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
+    for (const s of group) {
+      const title = sessionTitle(s.transcript)
+      if (title && tabLabel(title) === label) return s
+    }
+  }
+  return null
+}
+
+// `tab` is the label of the Claude Code tab in front, when there is one: then the account and usage shown are that
+// conversation's, whatever the folder is set to now, since that is the account it really runs on.
+function folderView(p, roots, env = process.env, tab = null) {
   if (roots.length === 0) return null
   const folder = roots[0]
   const accounts = readAccounts(p)
@@ -632,18 +762,26 @@ function folderView(p, roots, env = process.env) {
   // The launchers resolve the folder's real path when its own has no rule: a workspace opened through a link.
   const real = realPath(folder)
   const places = pathKey(real) === pathKey(folder) ? [folder] : [folder, real]
-  const latest = latestStatus(p, places)
   const current = launchedAccount(p, folder, rules, accounts, env)
   const currentName = current.name
-  const status = latestStatus(p, places, currentName)
+  const listed = accounts.includes(current)
   // The sign-in the account has now, not the one its last session ran as: a "Sign in again" shows at once.
   const email = emailOf(current.dir, p.home)
+  const inTab = tabStatus(p, places, tab, accounts)
+  if (inTab) {
+    const runsOn = accounts.find(a => a.name === inTab.account.name)
+    const shownEmail = runsOn ? emailOf(runsOn.dir, p.home) : inTab.account.email ?? NOT_SIGNED_IN
+    const openOn = inTab.account.name !== currentName ? inTab.account.name : null
+    return { folder, accounts, status: inTab, openOn, currentName, email, listed, tab: true, shownName: inTab.account.name, shownEmail }
+  }
+  const latest = latestStatus(p, places)
+  const status = latestStatus(p, places, currentName)
   // Only while that conversation is still open: once it is closed, nothing runs on the old account. A status of an
   // account that was removed since is not an open chat either.
   const oldDir = latest && accounts.find(a => a.name === latest.account.name)?.dir
   const stillOpen = Boolean(oldDir) && sessionOpen(oldDir, latest.sessionId)
   const openOn = latest && latest.account.name !== currentName && stillOpen ? latest.account.name : null
-  return { folder, accounts, status, openOn, currentName, email, listed: accounts.includes(current) }
+  return { folder, accounts, status, openOn, currentName, email, listed, tab: false, shownName: currentName, shownEmail: email }
 }
 
 // The login file Claude Code's VS Code extension watches. It reads it in VS Code's own process, which the Billable
@@ -1134,6 +1272,9 @@ module.exports = {
   latestStatus,
   sessionOpen,
   folderView,
+  tabStatus,
+  tabLabel,
+  sessionTitle,
   sharedSignIns,
   pruneSessions,
   sessionTokens,

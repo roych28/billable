@@ -919,3 +919,98 @@ test('touch changes the time of the login file and not a byte of it', () => {
   assert.strictEqual(fs.existsSync(path.join(p.home, 'missing.json')), false)
   assert.strictEqual(lib.emailInFile(path.join(p.home, 'missing.json')), null)
 })
+
+test('the status bar follows the conversation in the active tab, not the folder', () => {
+  const p = sandbox()
+  fs.mkdirSync(p.sessions, { recursive: true })
+  fs.writeFileSync(p.accounts, 'work\t~/.claude\nmine\t~/.claude-mine\n')
+  fs.writeFileSync(p.folders, '/w/app\tmine\n')
+  fs.writeFileSync(path.join(p.home, '.claude.json'), JSON.stringify({ oauthAccount: { emailAddress: 'me@work.test' } }))
+  fs.mkdirSync(path.join(p.home, '.claude-mine'), { recursive: true })
+  fs.writeFileSync(path.join(p.home, '.claude-mine', '.claude.json'), JSON.stringify({ oauthAccount: { emailAddress: 'me@home.test' } }))
+  const session = (id, account, updatedAt, lines) => {
+    const transcript = path.join(p.home, `${id}.jsonl`)
+    fs.writeFileSync(transcript, lines.map(l => JSON.stringify(l)).join('\n') + '\n')
+    fs.writeFileSync(
+      path.join(p.sessions, `${id}.json`),
+      JSON.stringify({ sessionId: id, cwd: '/w/app', transcript, account: { name: account }, usage: { limits: [{ kind: 'five_hour', percentUsed: updatedAt }] }, updatedAt }),
+    )
+    return transcript
+  }
+  // Started on work before the folder moved to mine; still open in a tab.
+  const old = session('old', 'work', 5, [{ type: 'ai-title', aiTitle: 'Fix the clinic video' }])
+  session('new', 'mine', 9, [{ type: 'ai-title', aiTitle: 'A much longer title than twenty-five characters' }])
+
+  const onOld = lib.folderView(p, ['/w/app'], {}, 'Fix the clinic video')
+  assert.strictEqual(onOld.tab, true)
+  assert.strictEqual(onOld.shownName, 'work')
+  assert.strictEqual(onOld.shownEmail, 'me@work.test')
+  assert.strictEqual(onOld.status.sessionId, 'old')
+  assert.strictEqual(onOld.currentName, 'mine', 'a new conversation still starts on the folder account')
+  assert.strictEqual(onOld.openOn, 'work')
+
+  // Claude Code cuts a long title to 24 characters and an ellipsis.
+  const onNew = lib.folderView(p, ['/w/app'], {}, 'A much longer title than…')
+  assert.strictEqual(onNew.shownName, 'mine')
+  assert.strictEqual(onNew.status.sessionId, 'new')
+  assert.strictEqual(onNew.openOn, null)
+
+  // A rename wins over the AI title, also when appended after the first read.
+  fs.appendFileSync(old, JSON.stringify({ type: 'custom-title', customTitle: 'Clinic' }) + '\n')
+  fs.appendFileSync(old, JSON.stringify({ type: 'ai-title', aiTitle: 'Something else' }) + '\n')
+  assert.strictEqual(lib.folderView(p, ['/w/app'], {}, 'Clinic').shownName, 'work')
+  assert.strictEqual(lib.folderView(p, ['/w/app'], {}, 'Fix the clinic video').tab, false)
+
+  // No tab, an untitled tab, or a label no session gives: the folder's account, as before.
+  for (const label of [null, 'Unknown chat']) {
+    const v = lib.folderView(p, ['/w/app'], {}, label)
+    assert.strictEqual(v.tab, false)
+    assert.strictEqual(v.shownName, 'mine')
+    assert.strictEqual(v.shownEmail, 'me@home.test')
+    assert.strictEqual(v.status.sessionId, 'new')
+  }
+  // A session of another folder with the same title is not this window's.
+  assert.strictEqual(lib.folderView(p, ['/w/other'], {}, 'Clinic').tab, false)
+})
+
+test('tab labels are cut the way Claude Code cuts them', () => {
+  assert.strictEqual(lib.tabLabel('short'), 'short')
+  assert.strictEqual(lib.tabLabel('x'.repeat(25)), 'x'.repeat(25))
+  assert.strictEqual(lib.tabLabel('x'.repeat(26)), 'x'.repeat(24) + '…')
+})
+
+test('a tab title shared by two sessions names the open one; a long-closed one is not looked at', () => {
+  const p = sandbox()
+  fs.mkdirSync(p.sessions, { recursive: true })
+  fs.writeFileSync(p.accounts, 'work\t~/.claude-work\nmine\t~/.claude-mine\n')
+  fs.writeFileSync(p.folders, '/w/app\tmine\n')
+  for (const n of ['work', 'mine']) fs.mkdirSync(path.join(p.home, `.claude-${n}`, 'sessions'), { recursive: true })
+  const now = Date.now()
+  const session = (id, account, updatedAt, title) => {
+    const transcript = path.join(p.home, `${id}.jsonl`)
+    fs.writeFileSync(transcript, JSON.stringify({ type: 'ai-title', aiTitle: title }) + '\n')
+    fs.writeFileSync(path.join(p.sessions, `${id}.json`), JSON.stringify({ sessionId: id, cwd: '/w/app', transcript, account: { name: account }, updatedAt }))
+  }
+  session('open-old', 'work', now - 5 * 3600_000, 'Same title')
+  session('closed-new', 'mine', now - 60_000, 'Same title')
+  session('closed-long-ago', 'mine', now - 3 * 24 * 3600_000, 'Old chat')
+  // This test's own process stands in for the running claude of open-old.
+  fs.writeFileSync(path.join(p.home, '.claude-work', 'sessions', `${process.pid}.json`), JSON.stringify({ pid: process.pid, sessionId: 'open-old' }))
+  assert.strictEqual(lib.tabStatus(p, ['/w/app'], 'Same title', undefined, now).sessionId, 'open-old')
+  assert.strictEqual(lib.tabStatus(p, ['/w/app'], 'Old chat', undefined, now), null)
+  fs.rmSync(path.join(p.home, '.claude-work', 'sessions', `${process.pid}.json`))
+  assert.strictEqual(lib.tabStatus(p, ['/w/app'], 'Same title', undefined, now).sessionId, 'closed-new', 'both closed: the latest')
+})
+
+test('a title is found at the end of a long transcript, and a rename read from the whole file when the end has none', () => {
+  const p = sandbox()
+  const file = path.join(p.home, 'long.jsonl')
+  const filler = JSON.stringify({ type: 'user', text: 'x'.repeat(1000) }) + '\n'
+  fs.writeFileSync(file, JSON.stringify({ type: 'custom-title', customTitle: 'Early rename' }) + '\n' + filler.repeat(3000))
+  assert.strictEqual(lib.sessionTitle(file), 'Early rename', 'only near the start: the whole file is read')
+  fs.appendFileSync(file, JSON.stringify({ type: 'custom-title', customTitle: 'Late rename' }) + '\n')
+  assert.strictEqual(lib.sessionTitle(file), 'Late rename', 'appended later')
+  const other = path.join(p.home, 'other.jsonl')
+  fs.writeFileSync(other, filler.repeat(3000) + JSON.stringify({ type: 'ai-title', aiTitle: 'At the end' }) + '\n')
+  assert.strictEqual(lib.sessionTitle(other), 'At the end')
+})
