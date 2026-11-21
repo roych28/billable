@@ -226,9 +226,11 @@ function activate(context) {
       loginWarned.add(key)
       const again = `Sign in to ${name}`
       if (s.state === 'ending') {
-        const dayKey = `loginWarned.${name}.${new Date().toDateString()}`
-        if (context.globalState.get(dayKey)) continue
-        context.globalState.update(dayKey, true)
+        // One key per account holding the day it was last told, so the keys do not pile up.
+        const dayKey = `loginWarned.${name}`
+        const today = new Date().toDateString()
+        if (context.globalState.get(dayKey) === today) continue
+        context.globalState.update(dayKey, today)
         vscode.window
           .showWarningMessage(
             `${name}'s Claude sign-in ends ${lib.timeLeft(s.expiresAt - Date.now())} (${when(s.expiresAt)}) and cannot be renewed after that. Sign in again before, so no conversation stops in the middle of a task.`,
