@@ -15,6 +15,8 @@ const IDLE_CHECK_MS = 30 * 60_000
 // Sessions quiet this long are pre-selected in "Stop idle sessions" when automatic stopping is off.
 const DEFAULT_IDLE_HOURS = 6
 const SESSIONS_CACHE_MS = 15_000
+// How often each window looks for sign-ins that are due a check (lib.authDue decides which actually run claude).
+const AUTH_CHECK_MS = 2 * 60_000
 
 function folders() {
   return (vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath)
@@ -68,6 +70,18 @@ function activate(context) {
   const login = { claude: claudePath }
   // Replaced by the integration tests, which must not touch the login file of the machine they run on.
   const claudeCode = { loginFile: () => lib.watchedLoginFile(p.home) }
+  // Replaced by the integration tests, which must not run claude: asks claude whether one account's sign-in works.
+  const auth = {
+    status: dir =>
+      new Promise(resolve => {
+        const claude = login.claude()
+        if (!lib.onPath(claude)) return resolve(null)
+        // Signed out, claude exits 1 and still prints the status.
+        execFile(claude, ['auth', 'status', '--json'], { env: lib.accountEnv(dir, p.home), timeout: 20_000 }, (err, stdout) =>
+          resolve(lib.parseAuthStatus(stdout, Date.now(), dir)),
+        )
+      }),
+  }
 
   const item = vscode.window.createStatusBarItem('claudeMultiAccount', vscode.StatusBarAlignment.Left, 100)
   item.name = 'Billable'
@@ -112,13 +126,11 @@ function activate(context) {
     if (v.tab && v.shownName !== v.currentName) {
       md.appendMarkdown(`This conversation runs on **${v.shownName}**. New conversations in this folder start on **${v.currentName}** (${v.email}).\n\n`)
     }
+    for (const line of signInLines(v)) md.appendMarkdown(`${line}\n\n`)
 
     const buttons = v.accounts
       .filter(a => a.name !== v.currentName)
-      .map(a => {
-        const signedOut = lib.emailOf(a.dir, p.home) === lib.NOT_SIGNED_IN
-        return link(`$(arrow-swap) Switch to ${a.name}${signedOut ? ' (not signed in)' : ''}`, 'claudeMultiAccount.switchTo', [a.name])
-      })
+      .map(a => link(`$(arrow-swap) Switch to ${a.name}${signInNote(lib.signInOf(p, a.dir))}`, 'claudeMultiAccount.switchTo', [a.name]))
     buttons.push(link('$(add) Add account', 'claudeMultiAccount.addAccount', []))
     buttons.push(link('$(graph) Cost report', 'claudeMultiAccount.costReport', []))
     md.appendMarkdown(buttons.join(' &nbsp;&nbsp; ') + '\n\n')
@@ -163,6 +175,105 @@ function activate(context) {
       )
     }
     return md
+  }
+
+  // ---- Sign-ins that ended or are about to ----
+  function when(ms) {
+    return new Date(ms).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+  }
+
+  // After an account's name in a list: why picking it would not just work.
+  function signInNote(s) {
+    // No email on file and never checked: an account that never signed in, not one whose sign-in ended.
+    if (s.state === 'signed-out') return s.checkedAt === null ? ' (not signed in)' : ' (signed out)'
+    if (s.state === 'ending') return ` (sign-in ends ${lib.timeLeft(s.expiresAt - Date.now())})`
+    return ''
+  }
+
+  function signInLine(name, s, folderName) {
+    const again = link(`Sign in to ${name} again`, 'claudeMultiAccount.signIn', [name])
+    if (s.state === 'signed-out' && s.checkedAt !== null) {
+      const ended = s.expiresAt ? ` Its sign-in ended ${when(s.expiresAt)}.` : ''
+      const live = lib.liveAccount(p, lib.readAccounts(p), name)
+      const move = live && folderName ? ` &nbsp; ${link(`Switch to ${live.name}`, 'claudeMultiAccount.switchTo', [live.name])}` : ''
+      return `$(error) **${name} is signed out.**${ended} Its conversations stop with a sign-in prompt. ${again}${move}`
+    }
+    if (s.state === 'ending') {
+      return `$(clock) **${name}'s sign-in ends ${lib.timeLeft(s.expiresAt - Date.now())}**, ${when(s.expiresAt)}. A sign-in cannot be renewed once it ends: sign in again before, so no conversation stops in the middle. ${again}`
+    }
+    return null
+  }
+
+  // The account shown, and the folder's account when a tab shows another one.
+  function signInLines(v) {
+    const lines = [signInLine(v.shownName, v.shownSignIn, v.shownName === v.currentName ? path.basename(v.folder) : null)]
+    if (v.shownName !== v.currentName) lines.push(signInLine(v.currentName, v.signIn, path.basename(v.folder)))
+    return lines.filter(Boolean)
+  }
+
+  // Once per window for each ended sign-in, and once a day for one about to end; only for the accounts on screen.
+  const loginWarned = new Set()
+  function warnLogin(v) {
+    const seen = new Set()
+    for (const [name, s] of [[v.currentName, v.signIn], [v.shownName, v.shownSignIn]]) {
+      if (seen.has(name)) continue
+      seen.add(name)
+      if (s.state !== 'signed-out' && s.state !== 'ending') continue
+      // A sign-in that ended is only known as such once claude said so: an email missing from the file is a new account.
+      if (s.state === 'signed-out' && s.checkedAt === null) continue
+      const key = `${name} ${s.state} ${s.expiresAt}`
+      if (loginWarned.has(key)) continue
+      loginWarned.add(key)
+      const again = `Sign in to ${name}`
+      if (s.state === 'ending') {
+        const dayKey = `loginWarned.${name}.${new Date().toDateString()}`
+        if (context.globalState.get(dayKey)) continue
+        context.globalState.update(dayKey, true)
+        vscode.window
+          .showWarningMessage(
+            `${name}'s Claude sign-in ends ${lib.timeLeft(s.expiresAt - Date.now())} (${when(s.expiresAt)}) and cannot be renewed after that. Sign in again before, so no conversation stops in the middle of a task.`,
+            again,
+          )
+          .then(pick => pick === again && signInAgain(name))
+        continue
+      }
+      const live = name === v.currentName ? lib.liveAccount(p, v.accounts, name) : null
+      const move = live ? `Switch ${path.basename(v.folder)} to ${live.name}` : null
+      const ended = s.expiresAt ? `: its sign-in ended ${when(s.expiresAt)}` : ''
+      vscode.window
+        .showErrorMessage(
+          `${name} is signed out of Claude${ended}. Conversations on ${name} stop with a sign-in prompt until it signs in again.`,
+          again,
+          ...(move ? [move] : []),
+        )
+        .then(pick => {
+          if (pick === again) signInAgain(name)
+          if (move && pick === move) switchTo(live.name)
+        })
+    }
+  }
+
+  // Runs claude for the accounts due a check, one at a time; a second call while one runs waits for that one.
+  let checking = null
+  function checkAuth(force = []) {
+    if (checking) return checking.then(() => (force.length ? checkAuth(force) : undefined))
+    const forced = new Set(force.map(d => lib.pathKey(d)))
+    checking = (async () => {
+      let changed = false
+      for (const a of lib.readAccounts(p)) {
+        if (!forced.has(lib.pathKey(a.dir)) && !lib.authDue(p, a.dir)) continue
+        const r = await auth.status(a.dir).catch(() => null)
+        if (!r) continue
+        try {
+          lib.recordAuth(p, a.dir, r)
+          changed = true
+        } catch {}
+      }
+      if (changed) refresh()
+    })().finally(() => {
+      checking = null
+    })
+    return checking
   }
 
   // ---- Idle sessions ----
@@ -331,7 +442,16 @@ function activate(context) {
     if (!v) return item.hide()
     followAccount(v)
     warnShared(v.accounts)
-    const parts = [`$(account) ${v.shownName}`]
+    warnLogin(v)
+    const shown = v.shownSignIn
+    const ended = shown.state === 'signed-out' && shown.checkedAt !== null
+    const parts = [
+      ended
+        ? `$(error) ${v.shownName} signed out`
+        : shown.state === 'ending'
+          ? `$(account) ${v.shownName} $(clock) ${lib.timeLeft(shown.expiresAt - Date.now()).replace(/^in /, '')}`
+          : `$(account) ${v.shownName}`,
+    ]
     let top = 0
     if (v.status) {
       const t = lib.sessionTokens(v.status.transcript)
@@ -344,7 +464,12 @@ function activate(context) {
     if (v.openOn && !v.tab) parts.push(`$(warning) chat on ${v.openOn}`)
     item.text = parts.join('   ')
     item.tooltip = tooltip(v)
-    item.backgroundColor = top >= WARN_PERCENT ? new vscode.ThemeColor('statusBarItem.warningBackground') : undefined
+    item.backgroundColor =
+      ended
+        ? new vscode.ThemeColor('statusBarItem.errorBackground')
+        : top >= WARN_PERCENT || shown.state === 'ending'
+          ? new vscode.ThemeColor('statusBarItem.warningBackground')
+          : undefined
     item.show()
   }
 
@@ -420,7 +545,7 @@ function activate(context) {
       refresh()
       return vscode.window.showWarningMessage(`There is no account named ${name}.`)
     }
-    if (lib.emailOf(target.dir, p.home) === lib.NOT_SIGNED_IN) {
+    if (lib.signedOut(p, target.dir)) {
       const signInFirst = 'Sign in'
       const anyway = 'Switch anyway'
       const answer = await vscode.window.showWarningMessage(
@@ -597,8 +722,12 @@ function activate(context) {
     const closed = vscode.window.onDidCloseTerminal(async t => {
       if (t !== terminal) return
       closed.dispose()
+      // The email stays on file after a sign-in ends, so it cannot tell whether this one worked: claude can.
+      await checkAuth([dir]).catch(() => {})
       refresh()
-      const signedIn = lib.emailOf(dir, p.home)
+      const checked = lib.authOf(p, dir)
+      const fresh = checked && Date.now() - checked.at < 60_000
+      const signedIn = fresh ? (checked.loggedIn && lib.loginState(checked) !== 'signed-out' ? checked.email ?? lib.emailOf(dir, p.home) : lib.NOT_SIGNED_IN) : lib.emailOf(dir, p.home)
       const wrong = email && signedIn !== lib.NOT_SIGNED_IN && signedIn.toLowerCase() !== email.toLowerCase()
       if (signedIn !== lib.NOT_SIGNED_IN && !wrong) {
         return then ? then(signedIn) : vscode.window.showInformationMessage(`${name} is signed in as ${signedIn}.`)
@@ -827,7 +956,7 @@ function activate(context) {
       const picks = [
         ...v.accounts
           .filter(a => a.name !== v.currentName)
-          .map(a => ({ label: `$(account) ${a.name}`, description: lib.emailOf(a.dir, p.home), name: a.name })),
+          .map(a => ({ label: `$(account) ${a.name}`, description: `${lib.emailOf(a.dir, p.home)}${signInNote(lib.signInOf(p, a.dir))}`, name: a.name })),
         ...(inherit ? [{ label: '$(discard) Use default', description: `Drop this folder's own rule: it runs on ${inherit}`, name: 'auto' }] : []),
         { label: '$(add) Add account', description: 'Sign in to another Claude account', name: '+add' },
         ...(v.accounts.length > 1 ? [{ label: '$(trash) Remove account', description: 'Sign out an account and drop it', name: '+remove' }] : []),
@@ -891,6 +1020,8 @@ function activate(context) {
   } catch {}
   const timer = setInterval(refresh, 30_000)
   context.subscriptions.push({ dispose: () => clearInterval(timer) })
+  const authTimer = setInterval(() => checkAuth().catch(() => {}), AUTH_CHECK_MS)
+  context.subscriptions.push({ dispose: () => clearInterval(authTimer) })
   const idleTimer = setInterval(() => autoStopIdle().catch(() => {}), IDLE_CHECK_MS)
   context.subscriptions.push({ dispose: () => clearInterval(idleTimer) })
   context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(refresh))
@@ -898,6 +1029,8 @@ function activate(context) {
   const onTabs = () => followActiveTab() && refresh()
   context.subscriptions.push(vscode.window.tabGroups.onDidChangeTabs(onTabs), vscode.window.tabGroups.onDidChangeTabGroups(onTabs))
   refresh()
+  // Off the activation path: claude takes a moment per account.
+  const authChecked = checkAuth().catch(() => {})
 
   // Shared items Claude Code replaced with a file of its own, or that the default account has gained, are linked again.
   try {
@@ -950,6 +1083,10 @@ function activate(context) {
     setClaude: file => (login.claude = file ? () => file : claudePath),
     setLicense: l => (license = l),
     setClaudeCodeLoginFile: file => (claudeCode.loginFile = file ? () => file : () => lib.watchedLoginFile(p.home)),
+    // Tests only: answer `claude auth status` for an account folder (null: claude gave no status), and run a check now.
+    setAuthStatus: fn => (auth.status = async dir => fn(dir)),
+    authChecked: () => authChecked,
+    checkAuthNow: (dirs = []) => checkAuth(dirs),
   }
 }
 

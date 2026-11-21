@@ -32,6 +32,9 @@ check('the extension activates and registers every command', async () => {
   // The login file Claude Code would watch: a stand-in, signed in as nobody the tests switch away from.
   fs.writeFileSync(claudeCodeLogin, JSON.stringify({ oauthAccount: { emailAddress: 'nobody@test' } }))
   api.setClaudeCodeLoginFile(claudeCodeLogin)
+  // No claude answers whether a sign-in works, unless a check says otherwise: the email on file decides, as before.
+  await api.authChecked()
+  api.setAuthStatus(() => null)
   // The test accounts have no plugin anywhere, so nothing is installed on its own.
   await api.pluginHealed()
   assert.deepStrictEqual(pluginInstalls, [])
@@ -831,6 +834,113 @@ check('setting up the launcher without the Claude Code extension warns instead o
     vscode.commands.executeCommand('claudeMultiAccount.setupLauncher'),
     new Promise(r => setTimeout(r, 500)),
   ])
+})
+
+// ---- Sign-ins that end ----
+const DAY = 24 * 3600_000
+const acmeDir = path.join(tmp, 'claude-acme')
+const authAnswers = map => dir => {
+  const lib = require('../../lib')
+  const hit = Object.entries(map).find(([d]) => lib.pathKey(d) === lib.pathKey(dir))
+  return hit ? { at: Date.now(), ...hit[1] } : null
+}
+function resetAuth() {
+  api.setAuthStatus(() => null)
+  fs.rmSync(path.join(base, 'auth.json'), { force: true })
+}
+
+check('an account whose sign-in ended shows as signed out although its email is on file, and offers a sign-in and a working account', async () => {
+  api.setAuthStatus(authAnswers({ [acmeDir]: { loggedIn: false, email: null, expiresAt: null } }))
+  const error = answer('showErrorMessage', undefined)
+  const info = answer('showInformationMessage', undefined)
+  const term = fakeTerminal()
+  try {
+    await api.checkAuthNow([acmeDir])
+    const s = api.statusBar()
+    assert.ok(s.text.startsWith('$(error) acme signed out'), s.text)
+    assert.ok(s.tooltip.includes('**acme is signed out.**'), s.tooltip)
+    assert.ok(s.tooltip.includes('me@acme.test'), 'the email stays shown')
+    assert.ok(s.tooltip.includes('command:claudeMultiAccount.signIn?'), s.tooltip)
+    assert.ok(s.tooltip.includes(`command:claudeMultiAccount.switchTo?${encodeURIComponent(JSON.stringify(['personal']))}`), s.tooltip)
+    await vscode.commands.executeCommand('claudeMultiAccount.refresh')
+    const told = error.seen.filter(a => /^acme is signed out of Claude/.test(a[0]))
+    assert.strictEqual(told.length, 1, 'told once, not on every refresh')
+    assert.deepStrictEqual(told[0].slice(1), ['Sign in to acme', 'Switch app to personal'])
+
+    // Signing in again: claude now says it works, and the status bar is back.
+    api.setAuthStatus(authAnswers({ [acmeDir]: { loggedIn: true, email: 'me@acme.test', expiresAt: Date.now() + 30 * DAY } }))
+    await vscode.commands.executeCommand('claudeMultiAccount.signIn', 'acme')
+    await until('the sign-in terminal', () => term.made.length === 1)
+    assertLogin(term.made[0], acmeDir, ['auth', 'login'])
+    await term.close(term.made[0])
+    await until('the signed-in notice', () => info.seen.some(a => a[0] === 'acme is signed in as me@acme.test.'))
+    assert.ok(api.statusBar().text.startsWith('$(account) acme'), api.statusBar().text)
+  } finally {
+    error.restore()
+    info.restore()
+    term.restore()
+    resetAuth()
+  }
+})
+
+check('a sign-in that is still signed out after the sign-in terminal closes is reported as not signed in', async () => {
+  api.setAuthStatus(authAnswers({ [acmeDir]: { loggedIn: false, email: null, expiresAt: null } }))
+  const warn = answer('showWarningMessage', undefined)
+  const info = answer('showInformationMessage', undefined)
+  const error = answer('showErrorMessage', undefined)
+  const term = fakeTerminal()
+  try {
+    await api.checkAuthNow([acmeDir])
+    await vscode.commands.executeCommand('claudeMultiAccount.signIn', 'acme')
+    await until('the sign-in terminal', () => term.made.length === 1)
+    await term.close(term.made[0])
+    await until('the not-signed-in warning', () => warn.seen.some(a => a[0] === 'acme is not signed in yet.'))
+    assert.ok(!info.seen.some(a => /is signed in as/.test(a[0])), 'the old email on file is not taken for a sign-in')
+  } finally {
+    warn.restore()
+    info.restore()
+    error.restore()
+    term.restore()
+    resetAuth()
+  }
+})
+
+check('a sign-in about to end shows the days left and warns once', async () => {
+  api.setAuthStatus(authAnswers({ [acmeDir]: { loggedIn: true, email: 'me@acme.test', expiresAt: Date.now() + 2 * DAY + 3600_000 } }))
+  const warn = answer('showWarningMessage', undefined)
+  try {
+    await api.checkAuthNow([acmeDir])
+    const s = api.statusBar()
+    assert.ok(s.text.startsWith('$(account) acme $(clock) 2 days'), s.text)
+    assert.ok(s.tooltip.includes("**acme's sign-in ends in 2 days**"), s.tooltip)
+    await vscode.commands.executeCommand('claudeMultiAccount.refresh')
+    const told = warn.seen.filter(a => /^acme's Claude sign-in ends in 2 days/.test(a[0]))
+    assert.strictEqual(told.length, 1, 'once')
+    assert.deepStrictEqual(told[0].slice(1), ['Sign in to acme'])
+  } finally {
+    warn.restore()
+    resetAuth()
+  }
+})
+
+check('the switch list marks an account that is signed out', async () => {
+  const personalDir = path.join(tmp, 'claude-personal')
+  api.setAuthStatus(authAnswers({ [personalDir]: { loggedIn: false, email: null, expiresAt: null } }))
+  let items
+  const pick = answer('showQuickPick', list => { items = list; return undefined })
+  const error = answer('showErrorMessage', undefined)
+  try {
+    await api.checkAuthNow([personalDir])
+    await vscode.commands.executeCommand('claudeMultiAccount.switch')
+    const personal = items.find(i => i.name === 'personal')
+    assert.strictEqual(personal.description, 'me@example.test (signed out)')
+    assert.ok(api.statusBar().tooltip.includes('Switch to personal (signed out)'), api.statusBar().tooltip)
+    assert.ok(!error.seen.length, 'no popup for an account this folder does not run on')
+  } finally {
+    pick.restore()
+    error.restore()
+    resetAuth()
+  }
 })
 
 exports.run = async () => {
