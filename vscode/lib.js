@@ -106,6 +106,120 @@ function emailOf(dir, home) {
   }
 }
 
+// ---- Whether a sign-in still works ----
+// A Claude sign-in has a fixed end (`loginExpiresAt` in `claude auth status`): after it, it cannot be renewed, only
+// signed in again. Claude Code then drops the tokens, but the email stays in .claude.json, so the email alone says
+// nothing about whether the account still works. `claude auth status` does: the result is kept in auth.json, one entry
+// per account folder, which every window and the plugin read, so each does not run claude on its own.
+const LOGIN_WARN_MS = 3 * 24 * 3600_000
+// How long a check holds before it is run again; a signed-out account is checked sooner, to see a new sign-in quickly.
+const AUTH_FRESH_MS = 10 * 60_000
+const AUTH_FRESH_SIGNED_OUT_MS = 2 * 60_000
+
+// The answer of `claude auth status --json`, or null when it is not one (claude missing, an old claude, a crash), or
+// when it is about another folder than `dir`: a claude on the way that picks the account by folder answers for that one.
+function parseAuthStatus(stdout, now = Date.now(), dir = null) {
+  let j
+  try {
+    j = JSON.parse(String(stdout ?? '').trim())
+  } catch {
+    return null
+  }
+  if (!j || typeof j.loggedIn !== 'boolean') return null
+  if (dir && typeof j.configDirectory === 'string' && pathKey(j.configDirectory) !== pathKey(dir)) return null
+  const end = j.loginExpiresAt ? Date.parse(j.loginExpiresAt) : NaN
+  return {
+    at: now,
+    loggedIn: j.loggedIn,
+    email: j.loggedIn && typeof j.email === 'string' ? j.email : null,
+    expiresAt: Number.isFinite(end) ? end : null,
+  }
+}
+
+// ok, ending (within LOGIN_WARN_MS of its end), signed-out, or unknown (never checked: then only the email is known).
+function loginState(auth, now = Date.now(), warnMs = LOGIN_WARN_MS) {
+  if (!auth) return 'unknown'
+  if (!auth.loggedIn) return 'signed-out'
+  if (auth.expiresAt === null || auth.expiresAt === undefined) return 'ok'
+  if (auth.expiresAt <= now) return 'signed-out'
+  return auth.expiresAt - now <= warnMs ? 'ending' : 'ok'
+}
+
+function authFile(p) {
+  return path.join(p.base, 'auth.json')
+}
+
+function readAuth(p) {
+  try {
+    const all = JSON.parse(fs.readFileSync(authFile(p), 'utf8'))
+    return all && typeof all === 'object' && !Array.isArray(all) ? all : {}
+  } catch {
+    return {}
+  }
+}
+
+function authOf(p, dir, all = readAuth(p)) {
+  const a = all[pathKey(dir)]
+  return a && typeof a.loggedIn === 'boolean' && typeof a.at === 'number' ? a : null
+}
+
+function recordAuth(p, dir, auth) {
+  fs.mkdirSync(p.base, { recursive: true })
+  const all = readAuth(p)
+  all[pathKey(dir)] = auth
+  writeAtomic(authFile(p), JSON.stringify(all, null, 2))
+}
+
+function loginFileOf(dir, home) {
+  return pathKey(dir) === pathKey(path.join(home, '.claude')) ? path.join(home, '.claude.json') : path.join(dir, '.claude.json')
+}
+
+// Whether the account is checked again: never checked, the check is old, or its login file changed after it (a sign-in
+// in a terminal writes it, and the account must not stay "signed out" for minutes after).
+function authDue(p, dir, now = Date.now(), auth = authOf(p, dir)) {
+  if (!auth) return true
+  const fresh = auth.loggedIn ? AUTH_FRESH_MS : AUTH_FRESH_SIGNED_OUT_MS
+  if (now - auth.at >= fresh) return true
+  try {
+    return fs.statSync(loginFileOf(dir, p.home)).mtimeMs > auth.at
+  } catch {
+    return false
+  }
+}
+
+// The environment that points claude at the account: ~/.claude is the account with no CLAUDE_CONFIG_DIR, and naming
+// it would make claude look for another sign-in (it then reports "not logged in").
+function accountEnv(dir, home, env = process.env) {
+  const out = { ...env, CLAUDE_CONFIG_DIR: dir }
+  if (pathKey(dir) === pathKey(path.join(home, '.claude'))) delete out.CLAUDE_CONFIG_DIR
+  return out
+}
+
+// What is known about the account's sign-in: the check when there is one, else only whether an email is on file.
+function signInOf(p, dir, now = Date.now(), all = readAuth(p)) {
+  const auth = authOf(p, dir, all)
+  const state = auth ? loginState(auth, now) : emailOf(dir, p.home) === NOT_SIGNED_IN ? 'signed-out' : 'unknown'
+  return { state, expiresAt: auth?.expiresAt ?? null, checkedAt: auth?.at ?? null }
+}
+
+function signedOut(p, dir, now = Date.now()) {
+  return signInOf(p, dir, now).state === 'signed-out'
+}
+
+// The first other account that still works: where a folder on a signed-out account can go meanwhile.
+function liveAccount(p, accounts, except, now = Date.now()) {
+  const all = readAuth(p)
+  return accounts.find(a => a.name !== except && signInOf(p, a.dir, now, all).state !== 'signed-out') ?? null
+}
+
+// "in 2 days", "in 5 hours", "in 20 minutes".
+function timeLeft(ms) {
+  const unit = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`
+  if (ms >= 24 * 3600_000) return `in ${unit(Math.floor(ms / (24 * 3600_000)), 'day')}`
+  if (ms >= 3600_000) return `in ${unit(Math.floor(ms / 3600_000), 'hour')}`
+  return `in ${unit(Math.max(1, Math.floor(ms / 60_000)), 'minute')}`
+}
+
 // The account a folder would run on without a rule of its own, or undefined when it has no rule of its own.
 function inheritedAccount(folder, rules, platform = process.platform) {
   const own = rules.filter(r => r.path !== '*' && pathKey(r.path, platform) === pathKey(folder, platform))
@@ -767,12 +881,14 @@ function folderView(p, roots, env = process.env, tab = null) {
   const listed = accounts.includes(current)
   // The sign-in the account has now, not the one its last session ran as: a "Sign in again" shows at once.
   const email = emailOf(current.dir, p.home)
+  const signIn = signInOf(p, current.dir)
   const inTab = tabStatus(p, places, tab, accounts)
   if (inTab) {
     const runsOn = accounts.find(a => a.name === inTab.account.name)
     const shownEmail = runsOn ? emailOf(runsOn.dir, p.home) : inTab.account.email ?? NOT_SIGNED_IN
     const openOn = inTab.account.name !== currentName ? inTab.account.name : null
-    return { folder, accounts, status: inTab, openOn, currentName, email, listed, tab: true, shownName: inTab.account.name, shownEmail }
+    const shownSignIn = runsOn ? signInOf(p, runsOn.dir) : { state: 'unknown', expiresAt: null, checkedAt: null }
+    return { folder, accounts, status: inTab, openOn, currentName, email, listed, tab: true, shownName: inTab.account.name, shownEmail, signIn, shownSignIn }
   }
   const latest = latestStatus(p, places)
   const status = latestStatus(p, places, currentName)
@@ -781,7 +897,7 @@ function folderView(p, roots, env = process.env, tab = null) {
   const oldDir = latest && accounts.find(a => a.name === latest.account.name)?.dir
   const stillOpen = Boolean(oldDir) && sessionOpen(oldDir, latest.sessionId)
   const openOn = latest && latest.account.name !== currentName && stillOpen ? latest.account.name : null
-  return { folder, accounts, status, openOn, currentName, email, listed, tab: false, shownName: currentName, shownEmail: email }
+  return { folder, accounts, status, openOn, currentName, email, listed, tab: false, shownName: currentName, shownEmail: email, signIn, shownSignIn: signIn }
 }
 
 // The login file Claude Code's VS Code extension watches. It reads it in VS Code's own process, which the Billable
@@ -825,7 +941,8 @@ function sharedSignIns(p, accounts) {
   const byEmail = new Map()
   for (const a of accounts) {
     const email = emailOf(a.dir, p.home)
-    if (email === NOT_SIGNED_IN) continue
+    // A sign-in that ended shares nothing: its email only stays on file.
+    if (email === NOT_SIGNED_IN || signedOut(p, a.dir)) continue
     const key = email.toLowerCase()
     if (!byEmail.has(key)) byEmail.set(key, { email, names: [] })
     byEmail.get(key).names.push(a.name)
@@ -1222,6 +1339,18 @@ function formatQuiet(ms) {
 
 module.exports = {
   NOT_SIGNED_IN,
+  LOGIN_WARN_MS,
+  parseAuthStatus,
+  loginState,
+  readAuth,
+  authOf,
+  recordAuth,
+  authDue,
+  accountEnv,
+  signInOf,
+  signedOut,
+  liveAccount,
+  timeLeft,
   watchedLoginFile,
   emailInFile,
   staleAccountFix,

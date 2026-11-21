@@ -1,4 +1,13 @@
-export type ClaudeMultiAccountAccount = { name: string; dir: string; email: string }
+export type ClaudeMultiAccountSignIn = 'ok' | 'ending' | 'signed-out' | 'unknown'
+
+export type ClaudeMultiAccountAccount = {
+  name: string
+  dir: string
+  email: string
+  /** From the last `claude auth status` the VS Code extension kept in auth.json; unknown when never checked. */
+  signIn?: ClaudeMultiAccountSignIn
+  expiresAt?: number | null
+}
 
 export type ClaudeMultiAccountInfo = {
   current: ClaudeMultiAccountAccount

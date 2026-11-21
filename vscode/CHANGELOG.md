@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.0
+
+- **A sign-in that ended shows as signed out.** A Claude sign-in has a fixed end and cannot be renewed after it; Claude Code then drops its tokens, but the email stays in `.claude.json`, so Billable kept showing the account as signed in while every conversation on it stopped with a sign-in prompt. Billable now asks `claude auth status` for each account (every ten minutes, sooner for a signed-out one, and right after a sign-in) and believes that over the email. The status bar turns red with `<account> signed out`, the hover offers `Sign in to <account> again` and a switch to an account that still works, and one notification per window says the same.
+- **A warning three days before a sign-in ends.** The status bar shows the days left, the hover gives the date, and a notification once a day offers to sign in again before, so no conversation stops in the middle of a task.
+- The switch menu and the hover mark an account that is signed out, or whose sign-in ends soon.
+- After the sign-in terminal closes, the result comes from `claude auth status` too: the old email on file is no longer taken for a sign-in that did not happen.
+- The checks are kept in `~/.claude-multi-account/auth.json`, so every VS Code window and the plugin read one answer instead of each running claude. An answer about another folder than the one asked (a `claude` on the way that picks the account by folder) is ignored.
+- Plugin 0.2.4: the chat line, the band above the prompt and `/account` say when the account, or the one the folder moved to, is signed out or about to be, and there is no switch button for a signed-out account.
+
 ## 0.8.2
 
 - **The status bar names the account of the conversation in front.** With a Claude Code tab in front, the account, tokens, cost and limits are that conversation's, the account it really runs on, also when it started before the folder moved to another account; the hover says which account a new conversation in the folder starts on. A new, untitled tab, or no conversation tab yet, shows the folder's account as before. The tab is matched to its session by the title Claude Code gives it.
