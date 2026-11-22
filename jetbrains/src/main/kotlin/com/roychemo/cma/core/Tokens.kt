@@ -78,7 +78,8 @@ class TranscriptReader {
 
 /** 1234 -> 1K, 2_500_000 -> 2.5M, as the VS Code extension shows them. */
 fun short(n: Long): String = when {
-    n >= 1_000_000 -> "${toFixed(n / 1_000_000.0, 1)}M"
+    // 999,500 rounds to 1.0M, not 1000K.
+    n >= 999_500 -> "${toFixed(n / 1_000_000.0, 1)}M"
     n >= 1_000 -> "${floor(n / 1_000.0 + 0.5).toLong()}K"
     else -> n.toString()
 }

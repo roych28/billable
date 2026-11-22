@@ -1,5 +1,6 @@
 package com.roychemo.cma.ide
 
+import com.intellij.icons.AllIcons
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.project.Project
@@ -60,6 +61,7 @@ class CmaWidget(private val project: Project) : CustomStatusBarWidget {
     companion object {
         const val ID = "ClaudeMultiAccount"
         private val AMBER = JBColor(0xB26B00, 0xF0A732)
+        private val RED = JBColor(0xC7222D, 0xFF5261)
     }
 
     private val label = JBLabel().apply {
@@ -81,6 +83,7 @@ class CmaWidget(private val project: Project) : CustomStatusBarWidget {
             }
         }.installOn(label)
         Cma.register(this)
+        SignIns.start()
         // Small local files only; reading them every 10 seconds costs less than watching the folders.
         timer = AppExecutorUtil.getAppScheduledExecutorService().scheduleWithFixedDelay({ refresh() }, 0, 10, TimeUnit.SECONDS)
     }
@@ -104,10 +107,21 @@ class CmaWidget(private val project: Project) : CustomStatusBarWidget {
             return
         }
         label.text = v.statusText()
-        label.foreground = if (v.warn) AMBER else UIUtil.getLabelForeground()
-        label.toolTipText = "<html><b>${esc(v.currentName)}</b> &nbsp;${esc(v.email)}<br>" +
+        label.foreground = when {
+            v.error -> RED
+            v.warn -> AMBER
+            else -> UIUtil.getLabelForeground()
+        }
+        label.icon = when {
+            v.error -> AllIcons.General.Error
+            v.ending -> AllIcons.General.Warning
+            else -> null
+        }
+        val signIn = (listOfNotNull(v.signInLine()) + v.sharedLines()).joinToString("") { "<b>${esc(it)}</b><br>" }
+        label.toolTipText = "<html><b>${esc(v.currentName)}</b> &nbsp;${esc(v.email)}<br>$signIn" +
             v.usageLines().joinToString("<br>") { esc(it) } + "<br><i>Click to switch or open the cost report</i></html>"
         label.isVisible = true
+        SignIns.warn(project, v)
     }
 
     private fun esc(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")

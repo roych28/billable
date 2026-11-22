@@ -243,5 +243,61 @@ class SetupTest {
         assertEquals("2K", short(1500))
         assertEquals("12K", short(11_500))
         assertEquals("2.5M", short(2_500_000))
+        assertEquals("999,999 is not 1000K", "1.0M", short(999_999))
+        assertEquals("999K", short(999_499))
+    }
+
+    @Test
+    fun `the account files are read like the launchers read them - a BOM, CRLF, and a name listed twice keeps its first line`() {
+        val p = sandbox()
+        File(p.base).mkdirs()
+        File(p.accounts).writeText("﻿work\t~/.claude-work\r\nwork\t~/.claude-other\r\nme\t~/.claude\r\n")
+        assertEquals(listOf(Account("work", "${p.home}/.claude-work"), Account("me", "${p.home}/.claude")), readAccounts(p))
+        File(p.folders).writeText("﻿*\tme\r\n")
+        assertEquals("me", accountFor("/anywhere", readRules(p), false))
+    }
+
+    @Test
+    fun `a relative CLAUDE_MULTI_ACCOUNT_HOME is taken from the home folder`() {
+        val p = CmaPaths.of("/Users/me", mapOf("CLAUDE_MULTI_ACCOUNT_HOME" to "setup/billable"))
+        assertEquals("/Users/me/setup/billable", p.base)
+    }
+
+    @Test
+    fun `a folder without a rule runs on ~ claude, never simply the first account of the file`() {
+        val p = sandbox()
+        File(p.base).mkdirs()
+        File(p.accounts).writeText("acme\t~/.claude-acme\nmine\t~/.claude\n")
+        File(p.sessions).mkdirs()
+        File(p.sessions, "s.json").writeText("""{"cwd":"/w/app","account":{"name":"acme"},"usage":{"limits":[]},"updatedAt":1}""")
+        val v = View.compute(p, listOf("/w/app"), TranscriptReader())!!
+        assertEquals("not the first account, nor the last session's", "mine", v.currentName)
+        assertEquals("acme", v.openOn)
+        // A rule naming an account that is not listed changes nothing either; with no account on ~/.claude, it shows as such.
+        File(p.accounts).writeText("acme\t~/.claude-acme\n")
+        File(p.folders).writeText("/w/app\tgone\n")
+        assertEquals("~/.claude", View.compute(p, listOf("/w/app"), TranscriptReader())!!.currentName)
+    }
+
+    @Test
+    fun `a project opened through a link takes the rule of its real path`() {
+        val p = sandbox()
+        val real = File(p.home, "code/app").apply { mkdirs() }
+        val link = File(p.home, "app-link")
+        Files.createSymbolicLink(link.toPath(), real.toPath())
+        File(p.base).mkdirs()
+        File(p.accounts).writeText("mine\t~/.claude\nacme\t~/.claude-acme\n")
+        File(p.folders).writeText("*\tmine\n${real.path}\tacme\n")
+        assertEquals("acme", View.compute(p, listOf(link.path), TranscriptReader())!!.currentName)
+        assertEquals("the longer rule of either spelling wins", "acme", accountFor(listOf(link.path, real.path), readRules(p), false))
+    }
+
+    @Test
+    fun `a switch replaces the folders file in one step and leaves no temp file`() {
+        val p = sandbox()
+        pin(p, "/w/app", "acme", false)
+        pin(p, "/w/other", "mine", false)
+        assertEquals("/w/app\tacme\n/w/other\tmine\n", File(p.folders).readText())
+        assertTrue(File(p.base).list()!!.none { it.endsWith(".tmp") })
     }
 }

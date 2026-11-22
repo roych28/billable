@@ -3,11 +3,13 @@ package com.roychemo.cma.ide
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.startup.ProjectActivity
 import com.intellij.openapi.util.SystemInfo
 import com.intellij.openapi.wm.WindowManager
 import com.roychemo.cma.core.pruneSessions
+import com.roychemo.cma.core.readAccounts
 import java.io.File
 
 abstract class CmaAction : AnAction() {
@@ -39,7 +41,17 @@ class CopyShellFunctionAction : CmaAction() {
 }
 
 class RefreshAction : CmaAction() {
-    override fun actionPerformed(e: AnActionEvent) = Cma.refreshAll()
+    override fun actionPerformed(e: AnActionEvent) {
+        Cma.refreshAll()
+        // Asks claude about every account now, not when each is due.
+        ApplicationManager.getApplication().executeOnPooledThread { SignIns.check(readAccounts(Cma.paths).map { it.dir }) }
+    }
+}
+
+class SignInAgainAction : CmaAction() {
+    override fun actionPerformed(e: AnActionEvent) {
+        SignIns.pickAndSignIn(e.project ?: return)
+    }
 }
 
 /**
