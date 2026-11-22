@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { ClaudeMultiAccountAccount, ClaudeMultiAccountInfo, ClaudeMultiAccountUsage } from '../types'
+import type { ClaudeMultiAccountAccount, ClaudeMultiAccountInfo, ClaudeMultiAccountSignIn, ClaudeMultiAccountUsage } from '../types'
 
 const info = atom({ plugin: 'multi-account', key: 'info' } as const, null)
 const usage = atom({ plugin: 'multi-account', key: 'usage' } as const, { limits: [] })
@@ -18,6 +18,8 @@ const HANDOFF_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000
 const REFRESH_MS = 5_000
 const NOT_SIGNED_IN = 'not signed in'
 const LIMIT_NAMES: Record<string, string> = { five_hour: '5-hour limit', seven_day: 'Weekly limit' }
+// A sign-in this close to its end is flagged: it cannot be renewed after, only signed in again.
+const LOGIN_WARN_MS = 3 * 24 * 60 * 60 * 1000
 
 type Handoff = {
   sessionId: string
@@ -75,6 +77,44 @@ async function emailOf($: EngineInterface, dir: string, h: string): Promise<stri
   }
 }
 
+type AuthCheck = { at: number; loggedIn: boolean; email: string | null; expiresAt: number | null }
+
+// What the VS Code extension last heard from `claude auth status` for each account folder. The email in .claude.json
+// stays after a sign-in ended, so it cannot say whether an account works; this can. Read only: the extension checks.
+async function authChecks($: EngineInterface): Promise<Record<string, AuthCheck>> {
+  try {
+    const all = JSON.parse(await $.fs.read(`${await base($)}/auth.json`)) as Record<string, AuthCheck>
+    return all && typeof all === 'object' && !Array.isArray(all) ? all : {}
+  } catch {
+    return {}
+  }
+}
+
+export function loginState(a: AuthCheck | undefined, now: number): ClaudeMultiAccountSignIn {
+  if (!a || typeof a.loggedIn !== 'boolean') return 'unknown'
+  if (!a.loggedIn) return 'signed-out'
+  if (a.expiresAt === null || a.expiresAt === undefined) return 'ok'
+  if (a.expiresAt <= now) return 'signed-out'
+  return a.expiresAt - now <= LOGIN_WARN_MS ? 'ending' : 'ok'
+}
+
+export function timeLeft(ms: number): string {
+  const unit = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
+  if (ms >= 24 * 3600_000) return `in ${unit(Math.floor(ms / (24 * 3600_000)), 'day')}`
+  if (ms >= 3600_000) return `in ${unit(Math.floor(ms / 3600_000), 'hour')}`
+  return `in ${unit(Math.max(1, Math.floor(ms / 60_000)), 'minute')}`
+}
+
+function signedOut(a: ClaudeMultiAccountAccount): boolean {
+  return a.email === NOT_SIGNED_IN || a.signIn === 'signed-out'
+}
+
+async function withSignIn($: EngineInterface, a: { name: string; dir: string; email: string }): Promise<ClaudeMultiAccountAccount> {
+  const check = (await authChecks($))[pathKey(a.dir)]
+  const signIn = loginState(check, await $.clock.now())
+  return { ...a, signIn, expiresAt: check?.expiresAt ?? null }
+}
+
 async function accounts($: EngineInterface): Promise<ClaudeMultiAccountAccount[]> {
   const h = await home($)
   const rows = await readLines($, `${await base($)}/accounts`)
@@ -85,7 +125,7 @@ async function accounts($: EngineInterface): Promise<ClaudeMultiAccountAccount[]
     .map(r => ({ name: r[0]!, dir: expand(r[1]!, h) }))
   const all = list.length > 0 ? list : [{ name: 'default', dir: `${h}/.claude` }]
   const out: ClaudeMultiAccountAccount[] = []
-  for (const a of all) out.push({ ...a, email: await emailOf($, a.dir, h) })
+  for (const a of all) out.push(await withSignIn($, { ...a, email: await emailOf($, a.dir, h) }))
   return out
 }
 
@@ -155,15 +195,13 @@ async function loadInfo($: EngineInterface, cwd: string): Promise<ClaudeMultiAcc
   const h = await home($)
   const list = await accounts($)
   const dir = expand((await $.env.get('CLAUDE_CONFIG_DIR')) || `${h}/.claude`, h)
-  const current = list.find(a => pathKey(a.dir) === pathKey(dir)) ?? {
-    name: dir.split('/').pop() ?? dir,
-    dir,
-    email: await emailOf($, dir, h),
-  }
+  const current =
+    list.find(a => pathKey(a.dir) === pathKey(dir)) ??
+    (await withSignIn($, { name: dir.split('/').pop() ?? dir, dir, email: await emailOf($, dir, h) }))
   const sessionId = await $.session.id()
   return {
     current,
-    others: list.filter(a => pathKey(a.dir) !== pathKey(current.dir) && a.email !== NOT_SIGNED_IN),
+    others: list.filter(a => pathKey(a.dir) !== pathKey(current.dir) && !signedOut(a)),
     cwd,
     folder: await folderRoot($, cwd),
     transcript: `${dir}/projects/${keyOf(cwd)}/${sessionId}.jsonl`,
@@ -335,9 +373,29 @@ function usageLine(u: ClaudeMultiAccountUsage): string {
   return [cost, ...u.limits.map(l => `${LIMIT_NAMES[l.kind] ?? l.kind} ${l.percentUsed}%`)].join('  ·  ')
 }
 
-function statusText(i: ClaudeMultiAccountInfo, u: ClaudeMultiAccountUsage, next: string | null): string {
+// Why the account will not just keep working: its sign-in ends soon, or ended. Empty when nothing is known against it.
+export function signInWarning(a: ClaudeMultiAccountAccount | undefined, now: number): string {
+  if (!a) return ''
+  if (a.signIn === 'signed-out') return `${a.name} is signed out of Claude: sign in again (claude auth login with its CLAUDE_CONFIG_DIR).`
+  if (a.signIn === 'ending' && a.expiresAt) {
+    return `${a.name}'s Claude sign-in ends ${timeLeft(a.expiresAt - now)} and cannot be renewed after: sign in again before.`
+  }
+  return ''
+}
+
+async function accountNamed($: EngineInterface, name: string | null): Promise<ClaudeMultiAccountAccount | undefined> {
+  return name ? (await accounts($)).find(a => a.name === name) : undefined
+}
+
+function statusText(
+  i: ClaudeMultiAccountInfo,
+  u: ClaudeMultiAccountUsage,
+  next: string | null,
+  warnings: string[] = [],
+): string {
   const lines = [
     `Account: ${i.current.name} (${i.current.email})`,
+    ...warnings,
     `Other accounts: ${i.others.map(o => `${o.name} (${o.email})`).join(', ') || 'none signed in'}`,
     usageLine(u),
   ]
@@ -348,9 +406,18 @@ function statusText(i: ClaudeMultiAccountInfo, u: ClaudeMultiAccountUsage, next:
 
 // A running session keeps its account. After the folder is switched (from the VS Code status bar, /account or
 // another session) the line says where a new conversation runs, so it never reads as if nothing changed.
-function vscodeStatus(i: ClaudeMultiAccountInfo, next: string | null): string {
+function vscodeStatus(i: ClaudeMultiAccountInfo, next: string | null, warnings: string[] = []): string {
   const line = `Claude account: ${i.current.name} (${i.current.email})`
-  return next && next !== i.current.name ? `${line}. New conversations in this folder run on ${next}.` : line
+  const base = next && next !== i.current.name ? `${line}. New conversations in this folder run on ${next}.` : line
+  return [base, ...warnings].join(' ')
+}
+
+// The current account's warning, and the next session's account's when it is another one.
+async function warningsFor($: EngineInterface, i: ClaudeMultiAccountInfo, next: string | null): Promise<string[]> {
+  const now = await $.clock.now()
+  const out = [signInWarning(i.current, now)]
+  if (next && next !== i.current.name) out.push(signInWarning(await accountNamed($, next), now))
+  return out.filter(w => w !== '')
 }
 
 async function refresh($: EngineInterface): Promise<void> {
@@ -359,7 +426,7 @@ async function refresh($: EngineInterface): Promise<void> {
   const list = await accounts($)
   const listed = list.find(a => pathKey(a.dir) === pathKey(i.current.dir))
   const current = listed ?? i.current
-  const others = list.filter(a => pathKey(a.dir) !== pathKey(current.dir) && a.email !== NOT_SIGNED_IN)
+  const others = list.filter(a => pathKey(a.dir) !== pathKey(current.dir) && !signedOut(a))
   await update($, info, () => ({ ...i, current, others }))
   // The folder the session started in, as the launcher reads it: after a `cd` to a folder without a rule, the current
   // folder would fall to the "*" rule and name an account no new conversation here runs on.
@@ -392,7 +459,8 @@ async function refreshStatus($: EngineInterface): Promise<void> {
   await refresh($)
   const i = await read($, info)
   if (!i || (await $.env.get('CLAUDE_CODE_ENTRYPOINT')) !== 'claude-vscode') return
-  const text = vscodeStatus(i, await read($, nextAccount))
+  const next = await read($, nextAccount)
+  const text = vscodeStatus(i, next, await warningsFor($, i, next))
   if (text === shown) return
   shown = text
   $.ui.status(text)
@@ -434,7 +502,7 @@ export const register: Register = on => {
     await writeStatus($)
 
     if ((await $.env.get('CLAUDE_CODE_ENTRYPOINT')) === 'claude-vscode') {
-      const text = `Claude account: ${loaded.current.name} (${loaded.current.email})`
+      const text = vscodeStatus(loaded, null, await warningsFor($, loaded, null))
       shown = text
       $.ui.status(text)
       try {
@@ -481,7 +549,8 @@ export const register: Register = on => {
     const name = e.args.trim()
     if (name) return { text: await switchTo($, name) }
     const i = (await read($, info)) ?? (await loadInfo($, await $.session.cwd()))
-    return { text: statusText(i, await read($, usage), await read($, nextAccount)) }
+    const next = await read($, nextAccount)
+    return { text: statusText(i, await read($, usage), next, await warningsFor($, i, next)) }
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -492,6 +561,7 @@ export const register: Register = on => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const u = await read($, usage)
     const pending = await read($, nextAccount)
+    const warnings = await warningsFor($, i, pending)
 
     return (
       <Box flexDirection="column">
@@ -517,6 +587,9 @@ export const register: Register = on => {
         {pending && pending !== i.current.name && (
           <Text color="yellow">The next session in this folder runs on {pending}</Text>
         )}
+        {warnings.map(w => (
+          <Text key={w} color="red">{w}</Text>
+        ))}
         <Text dimColor>{usageLine(u)}</Text>
       </Box>
     )

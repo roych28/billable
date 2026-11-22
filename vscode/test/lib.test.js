@@ -1014,3 +1014,115 @@ test('a title is found at the end of a long transcript, and a rename read from t
   fs.writeFileSync(other, filler.repeat(3000) + JSON.stringify({ type: 'ai-title', aiTitle: 'At the end' }) + '\n')
   assert.strictEqual(lib.sessionTitle(other), 'At the end')
 })
+
+// ---- Sign-ins that end ----
+// The shapes `claude auth status --json` printed on 21.11.2026 (Claude Code 2.1.326), trimmed.
+const LIVE = JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', loginExpiresAt: '2026-12-20T18:05:15.755Z', email: 'me@home.test', subscriptionType: 'max' })
+const DEAD = JSON.stringify({ loggedIn: false, authMethod: 'none', loginExpiresAt: null })
+const DAY = 24 * 3600_000
+
+test('claude auth status is read for whether the sign-in works, its end and its email, and anything else is no answer', () => {
+  const now = Date.parse('2026-11-21T12:00:00Z')
+  assert.deepStrictEqual(lib.parseAuthStatus(LIVE, now), { at: now, loggedIn: true, email: 'me@home.test', expiresAt: Date.parse('2026-12-20T18:05:15.755Z') })
+  assert.deepStrictEqual(lib.parseAuthStatus(`${DEAD}\n`, now), { at: now, loggedIn: false, email: null, expiresAt: null })
+  // An API key sign-in has no end.
+  assert.strictEqual(lib.parseAuthStatus(JSON.stringify({ loggedIn: true, authMethod: 'apiKey' }), now).expiresAt, null)
+  // Asked about one folder, answered about another: a launcher on the way picked the account by folder.
+  const about = d => JSON.stringify({ loggedIn: true, configDirectory: d, email: 'x@y.test' })
+  assert.strictEqual(lib.parseAuthStatus(about('/Users/t/.claude-b'), now, '/Users/t/.claude-a'), null)
+  assert.strictEqual(lib.parseAuthStatus(about('/Users/t/.claude-a'), now, '/Users/t/.claude-a/').email, 'x@y.test')
+  for (const junk of ['', undefined, 'Logged in as me', '{"ok":true}', 'null', '[]']) assert.strictEqual(lib.parseAuthStatus(junk, now), null, String(junk))
+})
+
+test('a sign-in is ok, ends within three days, or is signed out once it ended or claude says so', () => {
+  const now = Date.parse('2026-11-21T12:00:00Z')
+  const at = end => ({ at: now, loggedIn: true, email: 'a@b.test', expiresAt: end })
+  assert.strictEqual(lib.loginState(null, now), 'unknown')
+  assert.strictEqual(lib.loginState(at(null), now), 'ok')
+  assert.strictEqual(lib.loginState(at(now + 29 * DAY), now), 'ok')
+  assert.strictEqual(lib.loginState(at(now + 3 * DAY), now), 'ending')
+  assert.strictEqual(lib.loginState(at(now + 60_000), now), 'ending')
+  assert.strictEqual(lib.loginState(at(now - 1), now), 'signed-out', 'past its end, even before the next check')
+  assert.strictEqual(lib.loginState({ ...at(null), loggedIn: false }, now), 'signed-out')
+})
+
+test('an account whose sign-in ended reads as signed out although its email is still on file', () => {
+  const p = sandbox()
+  const dir = path.join(p.home, '.claude-kashuv')
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, '.claude.json'), JSON.stringify({ oauthAccount: { emailAddress: 'support@client.test' } }))
+  fs.mkdirSync(p.base, { recursive: true })
+  fs.writeFileSync(p.accounts, `mine\t~/.claude\nkashuv\t~/.claude-kashuv\n`)
+  fs.writeFileSync(p.folders, `*\tkashuv\n`)
+  fs.writeFileSync(path.join(p.home, '.claude.json'), JSON.stringify({ oauthAccount: { emailAddress: 'me@home.test' } }))
+  // Never checked: only the email is known, as before.
+  assert.strictEqual(lib.signInOf(p, dir).state, 'unknown')
+  assert.strictEqual(lib.signedOut(p, dir), false)
+  lib.recordAuth(p, dir, lib.parseAuthStatus(DEAD))
+  assert.strictEqual(lib.signInOf(p, dir).state, 'signed-out')
+  assert.strictEqual(lib.signedOut(p, dir), true)
+  const v = lib.folderView(p, ['/w/app'])
+  assert.strictEqual(v.currentName, 'kashuv')
+  assert.strictEqual(v.email, 'support@client.test', 'the email is still shown')
+  assert.strictEqual(v.signIn.state, 'signed-out')
+  assert.strictEqual(v.shownSignIn.state, 'signed-out')
+  // Where the folder can go meanwhile: the default account, never checked but signed in by its file.
+  assert.strictEqual(lib.liveAccount(p, lib.readAccounts(p), 'kashuv').name, 'mine')
+  lib.recordAuth(p, path.join(p.home, '.claude'), lib.parseAuthStatus(DEAD))
+  assert.strictEqual(lib.liveAccount(p, lib.readAccounts(p), 'kashuv'), null)
+  // A dead sign-in is not "the same Claude account" as a live one with that email.
+  const twin = path.join(p.home, '.claude-twin')
+  fs.mkdirSync(twin)
+  fs.writeFileSync(path.join(twin, '.claude.json'), JSON.stringify({ oauthAccount: { emailAddress: 'support@client.test' } }))
+  assert.deepStrictEqual(lib.sharedSignIns(p, [{ name: 'kashuv', dir }, { name: 'twin', dir: twin }]), [])
+})
+
+test('the checks are kept per account folder, and a broken file reads as no checks', () => {
+  const p = sandbox()
+  const a = path.join(p.home, '.claude-a')
+  lib.recordAuth(p, `${a}/`, lib.parseAuthStatus(LIVE, 5))
+  lib.recordAuth(p, path.join(p.home, '.claude-b'), lib.parseAuthStatus(DEAD, 6))
+  assert.strictEqual(lib.authOf(p, a).email, 'me@home.test', 'a trailing slash is the same folder')
+  assert.strictEqual(lib.authOf(p, path.join(p.home, '.claude-b')).loggedIn, false)
+  assert.strictEqual(lib.authOf(p, path.join(p.home, '.claude-c')), null)
+  fs.writeFileSync(path.join(p.base, 'auth.json'), '{not json')
+  assert.deepStrictEqual(lib.readAuth(p), {})
+  assert.strictEqual(lib.authOf(p, a), null)
+})
+
+test('a check is due when missing or old, sooner for a signed-out account, and at once after a sign-in writes its file', () => {
+  const p = sandbox()
+  const dir = path.join(p.home, '.claude-a')
+  fs.mkdirSync(dir, { recursive: true })
+  const file = path.join(dir, '.claude.json')
+  fs.writeFileSync(file, '{}')
+  const old = Date.now() - 3600_000
+  fs.utimesSync(file, new Date(old), new Date(old))
+  const now = Date.now()
+  assert.strictEqual(lib.authDue(p, dir, now), true, 'never checked')
+  lib.recordAuth(p, dir, lib.parseAuthStatus(LIVE, now))
+  assert.strictEqual(lib.authDue(p, dir, now + 60_000), false)
+  assert.strictEqual(lib.authDue(p, dir, now + 11 * 60_000), true)
+  lib.recordAuth(p, dir, lib.parseAuthStatus(DEAD, now))
+  assert.strictEqual(lib.authDue(p, dir, now + 60_000), false)
+  assert.strictEqual(lib.authDue(p, dir, now + 3 * 60_000), true, 'a signed-out account is checked again sooner')
+  // A sign-in in a terminal writes the login file after the check.
+  fs.utimesSync(file, new Date(now + 1000), new Date(now + 1000))
+  assert.strictEqual(lib.authDue(p, dir, now + 30_000), true)
+})
+
+test('claude is pointed at the account with CLAUDE_CONFIG_DIR, except ~/.claude, which has none', () => {
+  const home = '/Users/t'
+  assert.strictEqual(lib.accountEnv('/Users/t/.claude-a', home, { CLAUDE_CONFIG_DIR: '/x', PATH: '/bin' }).CLAUDE_CONFIG_DIR, '/Users/t/.claude-a')
+  const def = lib.accountEnv('/Users/t/.claude/', home, { CLAUDE_CONFIG_DIR: '/x', PATH: '/bin' })
+  assert.ok(!('CLAUDE_CONFIG_DIR' in def), 'naming ~/.claude makes claude report "not logged in"')
+  assert.strictEqual(def.PATH, '/bin')
+})
+
+test('the time left reads in days, hours or minutes', () => {
+  assert.strictEqual(lib.timeLeft(2.5 * DAY), 'in 2 days')
+  assert.strictEqual(lib.timeLeft(DAY), 'in 1 day')
+  assert.strictEqual(lib.timeLeft(5 * 3600_000 + 10), 'in 5 hours')
+  assert.strictEqual(lib.timeLeft(60_000), 'in 1 minute')
+  assert.strictEqual(lib.timeLeft(5), 'in 1 minute')
+})

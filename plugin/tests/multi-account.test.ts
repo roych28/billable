@@ -416,3 +416,71 @@ test('/account offers an account added after the session started', async ($, on)
   await clock.advance(5_000)
   expect(hints.length).toBe(count)
 })
+
+// ---- Sign-ins that end: what the VS Code extension heard from `claude auth status`, kept in auth.json ----
+const NOW = 1_000_000
+const DAY = 24 * 3600_000
+const auth = (entries: Record<string, { loggedIn: boolean; expiresAt: number | null }>) =>
+  JSON.stringify(
+    Object.fromEntries(Object.entries(entries).map(([dir, a]) => [dir, { at: NOW, email: a.loggedIn ? 'x@y.test' : null, ...a }])),
+  )
+
+test('an account whose sign-in ended gets no switch button although its email is still on file', async ($, on) => {
+  const files = {
+    ...signedIn(),
+    [`${HOME}/.claude-globex/.claude.json`]: JSON.stringify({ oauthAccount: { emailAddress: 'me@globex.test' } }),
+    [`${BASE}/auth.json`]: auth({ [`${HOME}/.claude-globex`]: { loggedIn: false, expiresAt: null } }),
+  }
+  world(on, files, 's-a1')
+  await start($)
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.find({ key: 'switch-personal' })).toBeDefined()
+  expect(await ui.find({ key: 'switch-globex' })).toBeUndefined()
+  await ui.unmount()
+  const shown = JSON.stringify(await $.command.run({ command: 'account', args: '' } as never))
+  expect(shown).not.toContain('globex (me@globex.test)')
+})
+
+test('a sign-in about to end is flagged in the band, in the VS Code line and in /account', async ($, on) => {
+  const statuses: (string | undefined)[] = []
+  on('ui.status', ($, e) => {
+    statuses.push(e.text)
+    return { value: undefined }
+  })
+  const files = { ...signedIn(), [`${BASE}/auth.json`]: auth({ [`${HOME}/.claude-acme`]: { loggedIn: true, expiresAt: NOW + 2 * DAY + 3600_000 } }) }
+  world(on, files, 's-a2', [], { CLAUDE_CODE_ENTRYPOINT: 'claude-vscode' })
+  await start($)
+  const warning = "acme's Claude sign-in ends in 2 days and cannot be renewed after: sign in again before."
+  expect(statuses.at(-1)).toBe(`Claude account: acme (me@acme.test) ${warning}`)
+  expect(JSON.stringify(await $.command.run({ command: 'account', args: '' } as never))).toContain(warning)
+})
+
+test('in the terminal, a folder moved to a signed-out account says so above the prompt', async ($, on) => {
+  const files = { ...signedIn(), [`${BASE}/auth.json`]: auth({ [`${HOME}/.claude`]: { loggedIn: false, expiresAt: null } }) }
+  const clock = world(on, files, 's-a3')
+  await start($)
+  files[`${BASE}/folders`] = `${CWD}\tpersonal\n`
+  await clock.advance(5_000)
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /personal is signed out of Claude/ })).toBeDefined()
+  expect(await ui.find({ key: 'switch-personal' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a sign-in past its end reads as signed out before the next check runs', async ($, on) => {
+  const files = { ...signedIn(), [`${BASE}/auth.json`]: auth({ [`${HOME}/.claude`]: { loggedIn: true, expiresAt: NOW - 1 } }) }
+  world(on, files, 's-a4')
+  await start($)
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.find({ key: 'switch-personal' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a broken auth.json changes nothing', async ($, on) => {
+  const files = { ...signedIn(), [`${BASE}/auth.json`]: '{nope' }
+  world(on, files, 's-a5')
+  await start($)
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.find({ key: 'switch-personal' })).toBeDefined()
+  await ui.unmount()
+})
