@@ -9,12 +9,15 @@ import com.intellij.openapi.ui.popup.ListSeparator
 import com.intellij.openapi.ui.popup.PopupStep
 import com.intellij.openapi.ui.popup.util.BaseListPopupStep
 import com.intellij.openapi.util.SystemInfo
-import com.roychemo.cma.core.NOT_SIGNED_IN
+import com.intellij.notification.NotificationAction
+import com.roychemo.cma.core.LoginState
 import com.roychemo.cma.core.accountFor
-import com.roychemo.cma.core.emailOf
 import com.roychemo.cma.core.pin
+import com.roychemo.cma.core.readAuth
 import com.roychemo.cma.core.readRules
 import com.roychemo.cma.core.shellFunction
+import com.roychemo.cma.core.signInNote
+import com.roychemo.cma.core.signInOf
 import java.awt.Component
 import java.awt.datatransfer.StringSelection
 import java.io.File
@@ -34,9 +37,18 @@ object CmaPopup {
         }
         val p = Cma.paths
         val items = mutableListOf<Item>()
-        v.accounts.filter { it.name != v.currentName }.forEach { a ->
-            val signedOut = emailOf(a.dir, p.home) == NOT_SIGNED_IN
-            items.add(Item("Switch to ${a.name}${if (signedOut) " (not signed in)" else ""}", null) { switchTo(project, v.folder, a.name) })
+        // A sign-in that ended or is about to: said first, with the way back.
+        v.signInLine()?.let { line ->
+            items.add(Item(line, null, null))
+            items.add(Item("Sign in to ${v.currentName} again", null) { SignIns.signInAgain(project, v.currentName) })
+        }
+        val auth = readAuth(p)
+        v.accounts.filter { it.name != v.currentName }.forEachIndexed { i, a ->
+            val s = signInOf(p, a.dir, v.now, auth)
+            val run = {
+                if (s.state == LoginState.SIGNED_OUT) offerSignInFirst(project, v.folder, a.name) else switchTo(project, v.folder, a.name)
+            }
+            items.add(Item("Switch to ${a.name}${signInNote(s, v.now)}", if (i == 0 && items.isNotEmpty()) "" else null, run))
         }
         v.inherit?.let { items.add(Item("Use default (runs on $it)", null) { switchTo(project, v.folder, "auto") }) }
         items.add(Item("Cost report...", if (items.isEmpty()) null else "") { CostReportDialog(project).show() })
@@ -72,6 +84,24 @@ object CmaPopup {
             project,
             "${File(folder).name} now runs on $next. Start a new claude session in the terminal: it picks up where the last one stopped.",
         )
+    }
+
+    /**
+     * A new conversation on an account that is not signed in asks to sign in through the default browser, which is
+     * usually signed in to another Claude account. So the sign-in comes first, with the link and the code.
+     */
+    fun offerSignInFirst(project: Project, folder: String, name: String) {
+        val n = NotificationGroupManager.getInstance().getNotificationGroup("Billable").createNotification(
+            "$name is not signed in. Sign in first: otherwise a new conversation on $name asks to sign in through your " +
+                "default browser, which is usually signed in to another Claude account.",
+            NotificationType.WARNING,
+        )
+        n.addAction(NotificationAction.createSimpleExpiring("Sign in") {
+            switchTo(project, folder, name)
+            SignIns.signInAgain(project, name)
+        })
+        n.addAction(NotificationAction.createSimpleExpiring("Switch anyway") { switchTo(project, folder, name) })
+        n.notify(project)
     }
 
     fun copyShellFunction(project: Project) {

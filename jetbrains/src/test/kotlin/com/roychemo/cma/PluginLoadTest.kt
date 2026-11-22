@@ -22,7 +22,7 @@ class PluginLoadTest : BasePlatformTestCase() {
     }
 
     fun testActionsAndTheStatusBarWidgetAreRegistered() {
-        for (id in listOf("ClaudeMultiAccount.Switch", "ClaudeMultiAccount.CostReport", "ClaudeMultiAccount.CopyShellFunction", "ClaudeMultiAccount.Refresh")) {
+        for (id in listOf("ClaudeMultiAccount.Switch", "ClaudeMultiAccount.SignIn", "ClaudeMultiAccount.CostReport", "ClaudeMultiAccount.CopyShellFunction", "ClaudeMultiAccount.Refresh")) {
             assertNotNull(id, ActionManager.getInstance().getAction(id))
         }
         val factories = ExtensionPointName.create<StatusBarWidgetFactory>("com.intellij.statusBarWidgetFactory").extensionList

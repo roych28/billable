@@ -20,8 +20,15 @@ data class CmaPaths(val home: String, val base: String) {
 
     companion object {
         fun of(home: String = System.getProperty("user.home"), env: Map<String, String> = System.getenv()): CmaPaths {
+            // A relative CLAUDE_MULTI_ACCOUNT_HOME is taken from the home folder, as in the extension, the launchers
+            // and the plugin: each runs in another working folder, and they must all read the same files.
             val override = env["CLAUDE_MULTI_ACCOUNT_HOME"]
-            return CmaPaths(home, if (!override.isNullOrEmpty()) override else File(home, ".claude-multi-account").path)
+            val base = when {
+                override.isNullOrEmpty() -> File(home, ".claude-multi-account").path
+                File(override).isAbsolute -> override
+                else -> Paths.get(home, override).normalize().toString()
+            }
+            return CmaPaths(home, base)
         }
     }
 }
@@ -41,6 +48,7 @@ fun expand(p: String, home: String): String {
 
 private fun readRows(file: String): List<List<String>> = try {
     File(file).readText()
+        .removePrefix("﻿")
         .split('\n')
         .map { it.trim() }
         .filter { it.isNotEmpty() && !it.startsWith("#") }
@@ -50,8 +58,9 @@ private fun readRows(file: String): List<List<String>> = try {
     emptyList()
 }
 
+/** A name listed twice counts once, the first line wins: the launchers resolve a name to its first line too. */
 fun readAccounts(p: CmaPaths): List<Account> {
-    val rows = readRows(p.accounts).map { Account(it[0], expand(it[1], p.home)) }
+    val rows = readRows(p.accounts).distinctBy { it[0] }.map { Account(it[0], expand(it[1], p.home)) }
     return rows.ifEmpty { listOf(Account("default", File(p.home, ".claude").path)) }
 }
 
@@ -65,8 +74,14 @@ fun pathKey(p: String, windows: Boolean = IS_WINDOWS): String {
 }
 
 /** The account a folder runs on: the longest matching folder rule wins, then the `*` default, else null. */
-fun accountFor(folder: String, rules: List<Rule>, windows: Boolean = IS_WINDOWS): String? {
-    val f = pathKey(folder, windows)
+fun accountFor(folder: String, rules: List<Rule>, windows: Boolean = IS_WINDOWS): String? = accountFor(listOf(folder), rules, windows)
+
+/**
+ * The same for several spellings of one folder (its path and its real path): the longest rule containing any of them
+ * wins, as in the launchers.
+ */
+fun accountFor(spellings: List<String>, rules: List<Rule>, windows: Boolean = IS_WINDOWS): String? {
+    val fs = spellings.map { pathKey(it, windows) }
     var best: Rule? = null
     var bestLen = -1
     for (r in rules) {
@@ -78,7 +93,7 @@ fun accountFor(folder: String, rules: List<Rule>, windows: Boolean = IS_WINDOWS)
             continue
         }
         val p = pathKey(r.path, windows)
-        if ((f == p || f.startsWith("$p/")) && p.length > bestLen) {
+        if (fs.any { f -> f == p || f.startsWith("$p/") } && p.length > bestLen) {
             best = r
             bestLen = p.length
         }
@@ -96,10 +111,10 @@ fun inheritedAccount(folder: String, rules: List<Rule>, windows: Boolean = IS_WI
     return Inherited(accountFor(folder, rules.filter { it !in own }, windows))
 }
 
+/** The email on file. A sign-in that ended keeps it: [signInOf] says whether the account still works. */
 fun emailOf(dir: String, home: String): String {
-    val file = if (dir == File(home, ".claude").path) File(home, ".claude.json") else File(dir, ".claude.json")
     return try {
-        Json.parse(file.readText()).field("oauthAccount").str("emailAddress") ?: NOT_SIGNED_IN
+        Json.parse(loginFileOf(dir, home).readText()).field("oauthAccount").str("emailAddress") ?: NOT_SIGNED_IN
     } catch (_: Exception) {
         NOT_SIGNED_IN
     }
@@ -119,7 +134,22 @@ fun pin(p: CmaPaths, folder: String, name: String, windows: Boolean = IS_WINDOWS
     }.toMutableList()
     if (name != "auto") kept.add("$folder\t$name")
     File(p.base).mkdirs()
-    file.writeText(kept.joinToString("\n") + "\n")
+    writeAtomic(file, kept.joinToString("\n") + "\n")
+}
+
+/** Replaces the file in one step, so a reader (a launcher, another IDE) never sees it half written. */
+fun writeAtomic(file: File, text: String) {
+    val tmp = File(file.parentFile, "${file.name}.${ProcessHandle.current().pid()}.${System.nanoTime()}.tmp")
+    try {
+        tmp.writeText(text)
+        try {
+            java.nio.file.Files.move(tmp.toPath(), file.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+        } catch (_: Exception) {
+            java.nio.file.Files.move(tmp.toPath(), file.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        }
+    } finally {
+        tmp.delete()
+    }
 }
 
 fun isInside(dir: String, root: String, windows: Boolean = IS_WINDOWS): Boolean {

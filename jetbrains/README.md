@@ -25,6 +25,11 @@ costs. This plugin puts the account, the usage and the switch in the IDE's statu
   ```
   Add it to `~/.zshrc` or `~/.bashrc` and open a new terminal tab. The plugin installs the `cma` launcher in
   `~/.claude-multi-account/bin` on startup when it is not there yet (the VS Code extension installs the same file).
+- **Sign-ins that end.** A Claude sign-in has a fixed end and cannot be renewed after it, while its email stays on
+  file. The plugin asks `claude auth status` for each account (every ten minutes, sooner for a signed-out one, and
+  right after a sign-in), turns the item red with `<account> signed out`, warns three days before the end, and offers
+  `Sign in to <account>` (an IDE terminal running `claude auth login` for that account) or a switch to an account that
+  still works. The switch menu marks each account that is signed out or about to be.
 
 Everything is also under **Tools > Billable**.
 
@@ -54,7 +59,8 @@ plain-text files in `~/.claude-multi-account` hold the setup:
 sees it only when it was started from an environment that has it (for example from a terminal on macOS).
 
 The plugin reads `sessions/*.json` (written by the Claude Code plugin for each session), the session transcript for
-token counts, and `ledger/*.json` for the cost report. It writes only `folders`, and the launcher in `bin` when it
+token counts, and `ledger/*.json` for the cost report. It writes only `folders`, `auth.json` (the answers of
+`claude auth status`, shared with the VS Code extension and the Claude Code plugin), and the launcher in `bin` when it
 is missing. The cost is Claude Code's own figure at API prices; on a Pro or Max plan it measures the work done, not
 what the plan charged.
 

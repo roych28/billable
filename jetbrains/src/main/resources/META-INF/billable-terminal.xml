@@ -1,0 +1,3 @@
+<!-- Loaded only when the terminal plugin is there: ide/LoginTerminal.kt uses it to run the sign-in in a terminal tab. -->
+<idea-plugin>
+</idea-plugin>

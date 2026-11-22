@@ -149,3 +149,48 @@ internal fun Any?.field(name: String): Any? = obj()?.get(name)
 internal fun Any?.str(name: String): String? = field(name) as? String
 
 internal fun Any?.num(name: String): Double? = field(name) as? Double
+
+/**
+ * Writes [value] (the shapes [Json.parse] returns, plus Int and Long) as JSON.stringify(value, null, 2) does, so a
+ * file the VS Code extension also writes, such as auth.json, reads the same whichever wrote it last.
+ */
+fun Json.stringify(value: Any?, indent: String = ""): String = when (value) {
+    null -> "null"
+    is Boolean -> value.toString()
+    is Int, is Long -> value.toString()
+    is Number -> {
+        val d = value.toDouble()
+        when {
+            d.isNaN() || d.isInfinite() -> "null"
+            d == Math.rint(d) && Math.abs(d) < 1e15 -> d.toLong().toString()
+            else -> d.toString()
+        }
+    }
+    is String -> jsonQuote(value)
+    is Map<*, *> -> if (value.isEmpty()) "{}" else {
+        val inner = "$indent  "
+        value.entries.joinToString(",\n", "{\n", "\n$indent}") { (k, v) -> "$inner${jsonQuote(k.toString())}: ${stringify(v, inner)}" }
+    }
+    is List<*> -> if (value.isEmpty()) "[]" else {
+        val inner = "$indent  "
+        value.joinToString(",\n", "[\n", "\n$indent]") { "$inner${stringify(it, inner)}" }
+    }
+    else -> jsonQuote(value.toString())
+}
+
+private fun jsonQuote(s: String): String {
+    val b = StringBuilder("\"")
+    for (c in s) {
+        when (c) {
+            '"' -> b.append("\\\"")
+            '\\' -> b.append("\\\\")
+            '\n' -> b.append("\\n")
+            '\r' -> b.append("\\r")
+            '\t' -> b.append("\\t")
+            '\b' -> b.append("\\b")
+            '\u000C' -> b.append("\\f")
+            else -> if (c < ' ') b.append(String.format("\\u%04x", c.code)) else b.append(c)
+        }
+    }
+    return b.append('"').toString()
+}

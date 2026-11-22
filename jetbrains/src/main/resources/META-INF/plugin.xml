@@ -18,12 +18,51 @@
             export for invoices.</li>
             <li><b>The terminal follows</b>: one shell function makes <code>claude</code> in the IDE terminal start on the
             folder's account.</li>
+            <li><b>Sign-ins that end</b>: a Claude sign-in has a fixed end and cannot be renewed after it. Billable asks
+            <code>claude auth status</code> for each account, turns red when one is signed out, warns three days
+            before, and signs it in again in an IDE terminal.</li>
         </ul>
         <p>Works with the companion Claude Code plugin <code>multi-account</code> and shares its setup with the
         Billable extension for VS Code. Everything stays on your machine. Not affiliated with Anthropic.</p>
     ]]></description>
 
+    <change-notes><![CDATA[
+        <h3>0.2.0</h3>
+        <ul>
+            <li><b>A sign-in that ended shows as signed out.</b> Claude Code keeps the email in <code>.claude.json</code>
+            after a sign-in ends, so the account looked signed in while every conversation on it stopped with a sign-in
+            prompt. Billable now asks <code>claude auth status</code> for each account (every ten minutes, sooner for a
+            signed-out one, and right after a sign-in) and believes that over the email. The status bar turns red with
+            <code>&lt;account&gt; signed out</code>, and one notification offers to sign in again or switch the folder to an
+            account that still works.</li>
+            <li><b>A warning three days before a sign-in ends</b>: the status bar shows the time left, and a notification
+            once a day offers to sign in again before.</li>
+            <li>The switch menu marks an account that is signed out, or whose sign-in ends soon. An account that never
+            signed in reads "not signed in"; "signed out" only once claude said so.</li>
+            <li>New action <b>Tools | Billable | Sign In to an Account Again</b>: runs <code>claude auth login</code> for the
+            account in an IDE terminal, with the link printed instead of opening the default browser (usually signed in to
+            another Claude account).</li>
+            <li>The checks are kept in <code>~/.claude-multi-account/auth.json</code>, shared with the VS Code extension and
+            the Claude Code plugin. An answer about another folder than the one asked is ignored.</li>
+            <li><b>Switching to an account that is not signed in offers the sign-in first</b> (or <code>Switch anyway</code>):
+            a new conversation there would ask to sign in through the default browser, which usually authorizes another
+            Claude account.</li>
+            <li><b>Two accounts on one sign-in are flagged</b>: when two accounts are signed in as the same Claude account,
+            the tooltip says so and a notification offers to sign either one in again.</li>
+            <li><b>The status bar agrees with the launcher</b>: a folder without a rule (or whose rule names an account that
+            is not listed) shows the account on <code>~/.claude</code>, not the first account of the file or the last
+            session's; a project opened through a link takes the rule of its real path too.</li>
+            <li>The account files are read like the launchers read them: a BOM, CRLF line endings, and a name listed twice
+            keeps its first line. A relative <code>CLAUDE_MULTI_ACCOUNT_HOME</code> is taken from the home folder.</li>
+            <li>A switch replaces the folders file in one step. 999,999 tokens read 1.0M, not 1000K.</li>
+            <li>The status bar shows the email the account is signed in as now, not the one of its last session.</li>
+            <li><b>Refresh</b> also asks claude about every account at once.</li>
+        </ul>
+    ]]></change-notes>
+
     <depends>com.intellij.modules.platform</depends>
+    <!-- The sign-in opens in an IDE terminal; without the terminal plugin the command is copied instead. -->
+    <depends optional="true" config-file="billable-terminal.xml">org.jetbrains.plugins.terminal</depends>
 
     <extensions defaultExtensionNs="com.intellij">
         <statusBarWidgetFactory id="ClaudeMultiAccount" implementation="com.roychemo.cma.ide.CmaWidgetFactory" order="first"/>
@@ -36,6 +75,9 @@
             <add-to-group group-id="ToolsMenu" anchor="last"/>
             <action id="ClaudeMultiAccount.Switch" class="com.roychemo.cma.ide.SwitchAccountAction"
                     text="Switch Account for This Folder" description="Pick the Claude account this project runs on"/>
+            <action id="ClaudeMultiAccount.SignIn" class="com.roychemo.cma.ide.SignInAgainAction"
+                    text="Sign In to an Account Again"
+                    description="Run claude auth login for one account in an IDE terminal"/>
             <action id="ClaudeMultiAccount.CostReport" class="com.roychemo.cma.ide.CostReportAction"
                     text="Cost Report by Account" description="What each Claude account and folder cost in a month"/>
             <action id="ClaudeMultiAccount.CopyShellFunction" class="com.roychemo.cma.ide.CopyShellFunctionAction"
